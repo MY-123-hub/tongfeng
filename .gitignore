@@ -1,0 +1,28 @@
+# Keil MDK-ARM build outputs
+*.o
+*.d
+*.crf
+*.lnp
+*.axf
+*.elf
+*.hex
+*.bin
+*.htm
+*.dep
+*.iex
+*.build_log.htm
+*.map
+*.lst
+
+# MDK-ARM generated
+MDK-ARM/*/
+MDK-ARM/JLink*
+MDK-ARM/RTE/
+MDK-ARM/DebugConfig/
+
+# STM32CubeMX
+.mxproject
+
+# OS junk
+Thumbs.db
+Desktop.ini
