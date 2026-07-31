@@ -245,13 +245,7 @@ void USART3_IRQHandler(void)
   /* USER CODE END USART3_IRQn 0 */
   HAL_UART_IRQHandler(&huart3);
   /* USER CODE BEGIN USART3_IRQn 1 */
-	if(ModbusType.RxRcFinishFlag==0)    // 无数据正在处理
-  {
-      ModbusType.RxBuf[ModbusType.RxPointer++]=uart3_rx_data;
-      ModbusType.RxWaitTime=0;       // 8ms内接收到新字符，刷新等待计时
-      if(ModbusType.RxPointer>=1)ModbusType.RxTimRun=1;   // 已开始接受字符，开启计时
-  }
-  HAL_UART_Receive_IT(&huart3,&uart3_rx_data,1);  //接受下一次数据
+  /* 接收字节由 HAL_UART_RxCpltCallback 处理，避免错误中断写入旧数据。 */
   /* USER CODE END USART3_IRQn 1 */
 }
 

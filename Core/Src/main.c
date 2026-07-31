@@ -199,6 +199,11 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   {
     ModbusType.Tx_1s++;     //  1s 计时——连续发送，用于测试
     ModbusType.Tx_500ms++;     //  1s 计时——连续发送，用于测试
+
+    if (ModbusType.TxProcFinishFlag != 0U)
+    {
+      ModbusType.TxWaitTime++;
+    }
     
     if(ModbusType.RxTimRun!=0)      // 正在接受数据
     {

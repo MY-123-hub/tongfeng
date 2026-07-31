@@ -41,6 +41,7 @@ extern UART_HandleTypeDef huart2;
 extern UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN Private defines */
+#define UART_RX_BUFFER_SIZE 100U
 
 /* USER CODE END Private defines */
 
@@ -51,8 +52,12 @@ void MX_USART3_UART_Init(void);
 /* USER CODE BEGIN Prototypes */
 void Usart_SendString(UART_HandleTypeDef USARTx, unsigned char *str, unsigned short len);
 
-extern uint8_t Rx2Buffer[100],rx2_pointer,rx2_data;
-extern uint8_t Rx1Buffer[100],rx1_pointer,rx1_data;
+extern uint8_t Rx2Buffer[UART_RX_BUFFER_SIZE];
+extern volatile uint8_t rx2_pointer, rx2_frame_ready, rx2_overflow;
+extern uint8_t rx2_data;
+extern uint8_t Rx1Buffer[UART_RX_BUFFER_SIZE];
+extern volatile uint8_t rx1_pointer, rx1_frame_ready, rx1_overflow;
+extern uint8_t rx1_data;
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus

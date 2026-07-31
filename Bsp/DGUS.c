@@ -13,8 +13,18 @@ uint16_t DGUS_cntPre = 0;
 *****************************************************/
 void DGUS_Clear(void)
 {
+	uint32_t primask = __get_PRIMASK();
+
+	__disable_irq();
 	memset(Rx1Buffer, 0, sizeof(Rx1Buffer));
 	rx1_pointer = 0;
+	rx1_frame_ready = 0;
+	rx1_overflow = 0;
+	DGUS_cntPre = 0;
+	if (primask == 0U)
+	{
+		__enable_irq();
+	}
 }
 
 
@@ -27,6 +37,15 @@ void DGUS_Clear(void)
 *****************************************************/
 _Bool DGUS_WaitRecive(void)
 {
+	if (rx1_overflow != 0U)
+	{
+		DGUS_Clear();
+		return REV_WAIT;
+	}
+	if (rx1_frame_ready != 0U)
+	{
+		return REV_OK;
+	}
 	if(rx1_pointer == 0) 							//如果接收计数为0 则说明没有处于接收数据中，所以直接跳出，结束函数
 		return REV_WAIT;
 	if(rx1_pointer == DGUS_cntPre)				//如果上一次的值和这次相同，则说明接收完毕
@@ -34,7 +53,7 @@ _Bool DGUS_WaitRecive(void)
     HAL_Delay(5);   // 确保接受数据完整性
     if(rx1_pointer == DGUS_cntPre)				//如果上一次的值和这次相同，则说明接收完毕
     {
-      rx1_pointer = 0;							//清0接收计数
+	  rx1_frame_ready = 1;						// 冻结当前帧，防止解析期间被中断覆盖
       return REV_OK;								//返回接收完成标志
     }
 	}
@@ -55,8 +74,7 @@ void DGUS_WriteSingleData(int S_Addr,int Data)
 {
   char Com_all[16]={0x5A,0xA5,0x05,0x82,S_Addr/256,S_Addr%256,Data/256,Data%256};
 
-	DGUS_Clear();								//清空接收缓存
-	Usart_SendString(huart1, (unsigned char *)Com_all, 8);
+  Usart_SendString(huart1, (unsigned char *)Com_all, 8);
 }
 
 
@@ -69,66 +87,75 @@ void DGUS_WriteSingleData(int S_Addr,int Data)
 *****************************************************/
 void DGUS_TouchAck(void)
 {
-  if((DGUS_WaitRecive()==REV_OK)&(Rx1Buffer[0]==0x5A)&(Rx1Buffer[1]==0xA5))   // 收到正确数据
+  if ((DGUS_WaitRecive() == REV_OK) && (rx1_pointer >= 6U) &&
+      ((uint16_t)rx1_pointer >= ((uint16_t)Rx1Buffer[2] + 3U)) &&
+      (Rx1Buffer[0] == 0x5A) && (Rx1Buffer[1] == 0xA5) &&
+      (Rx1Buffer[3] == 0x83))
   {
-//     led2_on(); //调试指示灯，无用。其他地方可能已经使用该LED，再次使用时注意冲突；
-    if(Rx1Buffer[3]==0x83)        // 是触摸数据
+    switch ((uint16_t)((Rx1Buffer[4] << 8) | Rx1Buffer[5]))
     {
-      if((Rx1Buffer[4]==0x29)&(Rx1Buffer[5]==0x00))   // 模式设定-降水模式
+      case 0x2900:
       {
         DGUS_Clear();
         char Com_all[20]={0x5A,0xA5,0x09,0x82,0x29,0x00,0x00,0x01,0x00,0x00,0x00,0x00};
         Usart_SendString(huart1, (unsigned char *)Com_all, 13);
-      }
-      if((Rx1Buffer[4]==0x29)&(Rx1Buffer[5]==0x01))   // 模式设定-降温模式
+      } break;
+      case 0x2901:
       {
         DGUS_Clear();
         char Com_all[20]={0x5A,0xA5,0x09,0x82,0x29,0x00,0x00,0x00,0x00,0x01,0x00,0x00};
         Usart_SendString(huart1, (unsigned char *)Com_all, 13);
-      }
-      if((Rx1Buffer[4]==0x29)&(Rx1Buffer[5]==0x02))   // 模式设定-储冷模式
+      } break;
+      case 0x2902:
       {
         DGUS_Clear();
         char Com_all[20]={0x5A,0xA5,0x09,0x82,0x29,0x00,0x00,0x00,0x00,0x00,0x00,0x01};
         Usart_SendString(huart1, (unsigned char *)Com_all, 13);
-      }
-      if((Rx1Buffer[4]==0x29)&(Rx1Buffer[5]==0x03))   // 品种选择-小麦
+      } break;
+      case 0x2903:
       {
         DGUS_Clear();
         char Com_all[20]={0x5A,0xA5,0x0D,0x82,0x29,0x03,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
         Usart_SendString(huart1, (unsigned char *)Com_all, 16);
-      }
-      if((Rx1Buffer[4]==0x29)&(Rx1Buffer[5]==0x04))   // 品种选择-小麦
+      } break;
+      case 0x2904:
       {
         DGUS_Clear();
         char Com_all[20]={0x5A,0xA5,0x0D,0x82,0x29,0x03,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00};
         Usart_SendString(huart1, (unsigned char *)Com_all, 16);
-      }
-      if((Rx1Buffer[4]==0x29)&(Rx1Buffer[5]==0x05))   // 品种选择-小麦
+      } break;
+      case 0x2905:
       {
         DGUS_Clear();
         char Com_all[20]={0x5A,0xA5,0x0D,0x82,0x29,0x03,0x00,0x00,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x00};
         Usart_SendString(huart1, (unsigned char *)Com_all, 16);
-      }
+      } break;
+      case 0x2906:
+      {
+        DGUS_Clear();
+        char Com_all[20]={0x5A,0xA5,0x0D,0x82,0x29,0x03,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x00,0x00};
+        Usart_SendString(huart1, (unsigned char *)Com_all, 16);
+      } break;
+      case 0x2907:
+      {
+        DGUS_Clear();
+        char Com_all[20]={0x5A,0xA5,0x0D,0x82,0x29,0x03,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01};
+        Usart_SendString(huart1, (unsigned char *)Com_all, 16);
+      } break;
+      case 0x2908:
+      {
+        DGUS_Clear();
+        char Com_all[20]={0x5A,0xA5,0x07,0x82,0x29,0x08,0x00,0x01,0x00};
+        Usart_SendString(huart1, (unsigned char *)Com_all, 10);
+      } break;
+      default:
+        break;
     }
-    if((Rx1Buffer[4]==0x29)&(Rx1Buffer[5]==0x06))   // 品种选择-小麦
-    {
-      DGUS_Clear();
-      char Com_all[20]={0x5A,0xA5,0x0D,0x82,0x29,0x03,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x00,0x00};
-      Usart_SendString(huart1, (unsigned char *)Com_all, 16);
-    }
-    if((Rx1Buffer[4]==0x29)&(Rx1Buffer[5]==0x07))   // 品种选择-小麦
-    {
-      DGUS_Clear();
-      char Com_all[20]={0x5A,0xA5,0x0D,0x82,0x29,0x03,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01};
-      Usart_SendString(huart1, (unsigned char *)Com_all, 16);
-    }
-    if((Rx1Buffer[4]==0x29)&(Rx1Buffer[5]==0x08))   // 品种选择-小麦
-    {
-      DGUS_Clear();
-      char Com_all[20]={0x5A,0xA5,0x07,0x82,0x29,0x08,0x00,0x01,0x00};
-      Usart_SendString(huart1, (unsigned char *)Com_all, 10);
-    }
+  }
+
+  if (rx1_frame_ready != 0U)
+  {
+    DGUS_Clear();
   }
 }
 
