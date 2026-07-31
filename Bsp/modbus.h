@@ -13,13 +13,15 @@ typedef struct
     uint8_t slave_addr;             // 从机地址
     
     uint8_t TxBuf[100];             // 主机发送数据缓存区
-    uint8_t TxProcFinishFlag;       // 发送数据完成标志位，1-无接受数据正在被处理
+    volatile uint8_t TxProcFinishFlag; // 发送并等待从机应答标志位
+    volatile uint16_t TxWaitTime;   // 等待应答时间，单位：ms
     
     uint8_t RxBuf[100];             // 接受从机应答数据缓存区
-    uint8_t RxPointer;              // 接受数据指针
-    uint8_t RxTimRun;               //判断接受从机应答信号是否完成，完成条件：RxWaitTime>9,即9ms内无数据接受
-    uint8_t RxWaitTime;             //判断接受从机应答信号是否完成，完成条件：RxWaitTime>9,即9ms内无数据接受
-    uint8_t RxRcFinishFlag;         // 接受数据完成标志位
+    volatile uint8_t RxPointer;     // 接受数据指针
+    volatile uint8_t RxTimRun;      // 判断接收是否正在进行
+    volatile uint8_t RxWaitTime;    // 帧间静默计时，单位：ms
+    volatile uint8_t RxRcFinishFlag;// 接收数据完成标志位
+    volatile uint8_t RxOverflow;    // 接收缓冲区溢出标志位
     
     uint16_t Tx_1s;         // 每1s发送一次数据
     uint16_t Tx_500ms;         // 每1s发送一次数据

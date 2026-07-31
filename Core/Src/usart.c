@@ -297,19 +297,82 @@ int fputc(int ch, FILE *f)    // 串口 printf 重定向
 	return (ch);
 }
 
-uint8_t Rx2Buffer[100],rx2_pointer,rx2_data;
-uint8_t Rx1Buffer[100],rx1_pointer,rx1_data;
+uint8_t Rx2Buffer[UART_RX_BUFFER_SIZE];
+volatile uint8_t rx2_pointer, rx2_frame_ready, rx2_overflow;
+uint8_t rx2_data;
+uint8_t Rx1Buffer[UART_RX_BUFFER_SIZE];
+volatile uint8_t rx1_pointer, rx1_frame_ready, rx1_overflow;
+uint8_t rx1_data;
+
+static void UART_StoreRxByte(uint8_t *buffer, volatile uint8_t *pointer,
+                             volatile uint8_t *frame_ready, volatile uint8_t *overflow,
+                             uint8_t data)
+{
+  if ((*frame_ready) != 0U)
+  {
+    return;
+  }
+
+  /* 保留末尾的 '\0'，使后续协议解析不会越过接收缓冲区。 */
+  if ((*pointer) < (UART_RX_BUFFER_SIZE - 1U))
+  {
+    buffer[*pointer] = data;
+    (*pointer)++;
+    buffer[*pointer] = '\0';
+  }
+  else
+  {
+    *overflow = 1U;
+  }
+}
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if(huart->Instance == USART2)
   {
-    Rx2Buffer[rx2_pointer++]=rx2_data;
+    UART_StoreRxByte(Rx2Buffer, &rx2_pointer, &rx2_frame_ready, &rx2_overflow, rx2_data);
     HAL_UART_Receive_IT(&huart2,&rx2_data,1);
   }
   if(huart->Instance == USART1)
   {
-    Rx1Buffer[rx1_pointer++]=rx1_data;
+    UART_StoreRxByte(Rx1Buffer, &rx1_pointer, &rx1_frame_ready, &rx1_overflow, rx1_data);
     HAL_UART_Receive_IT(&huart1,&rx1_data,1);
+  }
+  if(huart->Instance == USART3)
+  {
+    if (ModbusType.RxRcFinishFlag == 0U)
+    {
+      if (ModbusType.RxPointer < sizeof(ModbusType.RxBuf))
+      {
+        ModbusType.RxBuf[ModbusType.RxPointer++] = uart3_rx_data;
+      }
+      else
+      {
+        ModbusType.RxOverflow = 1U;
+      }
+      ModbusType.RxWaitTime = 0U;
+      ModbusType.RxTimRun = 1U;
+    }
+    HAL_UART_Receive_IT(&huart3, &uart3_rx_data, 1U);
+  }
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART1)
+  {
+    rx1_overflow = 1U;  /* 丢弃受错误影响的当前帧。 */
+    HAL_UART_Receive_IT(&huart1, &rx1_data, 1U);
+  }
+  else if (huart->Instance == USART2)
+  {
+    rx2_overflow = 1U;
+    HAL_UART_Receive_IT(&huart2, &rx2_data, 1U);
+  }
+  else if (huart->Instance == USART3)
+  {
+    ModbusType.RxOverflow = 1U;
+    HAL_UART_Receive_IT(&huart3, &uart3_rx_data, 1U);
   }
 }
 

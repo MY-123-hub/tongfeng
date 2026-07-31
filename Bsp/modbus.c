@@ -1,9 +1,31 @@
 ﻿#include "modbus.h"
 #include "usart.h"
+#include "gpio.h"
 #include "stdio.h"
+#include "string.h"
 
 
 ModbusTypeDef ModbusType;
+
+#define MODBUS_RESPONSE_TIMEOUT_MS 200U
+
+static void ModbusResetTransaction(void)
+{
+    uint32_t primask = __get_PRIMASK();
+
+    __disable_irq();
+    ModbusType.TxProcFinishFlag = 0U;
+    ModbusType.TxWaitTime = 0U;
+    ModbusType.RxRcFinishFlag = 0U;
+    ModbusType.RxPointer = 0U;
+    ModbusType.RxTimRun = 0U;
+    ModbusType.RxWaitTime = 0U;
+    ModbusType.RxOverflow = 0U;
+    if (primask == 0U)
+    {
+        __enable_irq();
+    }
+}
 
 
 
@@ -16,6 +38,7 @@ ModbusTypeDef ModbusType;
 void ModbusInit(void)
 {
     ModbusType.slave_addr=1;  //******从机地址：1
+    ModbusResetTransaction();
 }
 
 
@@ -67,6 +90,15 @@ uint16_t GetModbusCRC16_Cal(uint8_t *dat, uint32_t len)
 void ModbusTx(uint8_t addr,uint8_t fun,uint16_t reg_addr,uint16_t reg_size)
 {
 	uint16_t modbus_crc;        // 用于暂存计算得到的 CRC 校验码
+
+    /* 一次只允许一个请求在途，避免回包与下一条命令错配。 */
+    if (ModbusType.TxProcFinishFlag != 0U)
+    {
+        return;
+    }
+
+    ModbusResetTransaction();
+    ModbusType.TxProcFinishFlag = 1U;
   /* 根据 RS485 通讯格式放置数据 */ 
 	ModbusType.TxBuf[0]=addr;       
 	ModbusType.TxBuf[1]=fun;
@@ -81,9 +113,6 @@ void ModbusTx(uint8_t addr,uint8_t fun,uint16_t reg_addr,uint16_t reg_size)
 	{
 		HAL_UART_Transmit(&huart3,(uint8_t *)&ModbusType.TxBuf[i],1,50);
 	}
-    
-    ModbusType.TxProcFinishFlag=1;  // 发送完毕标志位置1
-    HAL_Delay(10);                  // 发完一帧后延时10ms
 }
 
 
@@ -96,19 +125,31 @@ void ModbusTx(uint8_t addr,uint8_t fun,uint16_t reg_addr,uint16_t reg_size)
   */
 void ModBusRxProc(void)
 {   
-    if((ModbusType.RxRcFinishFlag==1)&(ModbusType.TxProcFinishFlag==1))      // 发送数据完成
+    if ((ModbusType.TxProcFinishFlag != 0U) &&
+        (ModbusType.TxWaitTime >= MODBUS_RESPONSE_TIMEOUT_MS))
+    {
+        ModbusResetTransaction();
+        return;
+    }
+
+    if(ModbusType.RxRcFinishFlag == 1U)
     {
         uint16_t crc_cal;   // 用于存计算得到的CRC校验码
+        uint8_t rx_len = ModbusType.RxPointer;
         
         /*** 打印接收到数据，调试用 ***/
         //printf("\r\nData: %02x %02x %02x %02x %02x %02x %02x %02x \r\n"
                 //,ModbusType.RxBuf[0],ModbusType.RxBuf[1],ModbusType.RxBuf[2],ModbusType.RxBuf[3],ModbusType.RxBuf[4],ModbusType.RxBuf[5],ModbusType.RxBuf[6],ModbusType.RxBuf[7]);      
         
-        crc_cal=GetModbusCRC16_Cal(ModbusType.RxBuf,sizeof(ModbusType.RxBuf)-2);    // 计算接收数据的校验码
-        if(crc_cal==((ModbusType.RxBuf[sizeof(ModbusType.RxBuf)-2]<<8)|(ModbusType.RxBuf[sizeof(ModbusType.RxBuf)-1]))) // 判断校验码
+        if ((ModbusType.TxProcFinishFlag != 0U) &&
+            (ModbusType.RxOverflow == 0U) && (rx_len >= 5U))
+        {
+        crc_cal=GetModbusCRC16_Cal(ModbusType.RxBuf, (uint32_t)(rx_len - 2U));    // 计算接收数据的校验码
+        if(crc_cal==((ModbusType.RxBuf[rx_len - 2U]<<8)|(ModbusType.RxBuf[rx_len - 1U]))) // 判断校验码
         {
             //printf("CRC Match succeeded!!! \r\n");
-            if(ModbusType.RxBuf[0]==ModbusType.slave_addr)  // 判断从机地址
+            if((ModbusType.RxBuf[0] == ModbusType.slave_addr) &&
+               (ModbusType.RxBuf[1] == ModbusType.TxBuf[1]))  // 判断从机地址和功能码
             {
                 //printf("Slave addr --> %d \r\n",ModbusType.slave_addr);
                 if(ModbusType.RxBuf[1]==3)   // 读功能
@@ -146,7 +187,8 @@ void ModBusRxProc(void)
                         }break; 
                     }
                 }
-                if(ModbusType.RxBuf[1]==6)  // 写功能
+                if((ModbusType.RxBuf[1] == MudbusFun_writeSingle) && (rx_len == 8U) &&
+                   (memcmp(ModbusType.RxBuf, ModbusType.TxBuf, 6U) == 0))  // 写单寄存器回显
                 {
                     switch(ModbusType.RxBuf[2]<<8|ModbusType.RxBuf[3])
                     {
@@ -163,12 +205,14 @@ void ModBusRxProc(void)
                                 {
                                     //printf(">>> Modbus write forward start <<<\r\n");
                                     SysVariType.vent_open_flag=1;
+                                    led1_on();
                                 }break; 
                             
                                 case 0x0011:        // 正转停止命令
                                 {
                                     //printf(">>> Modbus write forward stop <<<\r\n");
                                     SysVariType.vent_open_flag=0;
+                                    led1_off();
                                 }break; 
                                 
                                 case 0x0022:        // 反转开始命令
@@ -187,12 +231,13 @@ void ModBusRxProc(void)
                 }
             }
         }
-        else 
-            //printf("CRC March Failed!!! \r\n");   /* 接受数据 CRC 匹配错误 */
+        else
+        {
+            /* CRC 不匹配：丢弃当前帧。 */
+        }
+        }
     
-        ModbusType.TxProcFinishFlag=0;    /*******必须在此处归零，否则接收数据极不稳定******/
-        ModbusType.RxRcFinishFlag=0;    /******* 数据接受完成标志位复位 *******/ 
-        ModbusType.RxPointer=0;     /******* 接受数据的指针归零 *******/ 
+        ModbusResetTransaction();
     }
 }
 

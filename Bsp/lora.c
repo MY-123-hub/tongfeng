@@ -3,6 +3,11 @@
 
 LoRaTypeDef LoRaType = {0};
 uint16_t LORA_cntPre = 0;
+static char *LORA_lastCommand;
+static uint8_t LORA_commandFailures;
+
+#define LORA_MAX_SENSOR_COUNT 6U
+#define LORA_COMMAND_RETRY_COUNT 3U
 
 
 /*****************************************************
@@ -14,8 +19,18 @@ uint16_t LORA_cntPre = 0;
 *****************************************************/
 void LORA_Clear(void)
 {
+	uint32_t primask = __get_PRIMASK();
+
+	__disable_irq();
 	memset(Rx2Buffer, 0, sizeof(Rx2Buffer));
 	rx2_pointer = 0;
+	rx2_frame_ready = 0;
+	rx2_overflow = 0;
+	LORA_cntPre = 0;
+	if (primask == 0U)
+	{
+		__enable_irq();
+	}
 }
 
 
@@ -28,6 +43,15 @@ void LORA_Clear(void)
 *****************************************************/
 _Bool LORA_WaitRecive(void)
 {
+	if (rx2_overflow != 0U)
+	{
+		LORA_Clear();
+		return REV_WAIT;
+	}
+	if (rx2_frame_ready != 0U)
+	{
+		return REV_OK;
+	}
 	if(rx2_pointer == 0) 							//如果接收计数为0 则说明没有处于接收数据中，所以直接跳出，结束函数
 		return REV_WAIT;
 	if(rx2_pointer == LORA_cntPre)				//如果上一次的值和这次相同，则说明接收完毕
@@ -35,7 +59,7 @@ _Bool LORA_WaitRecive(void)
     HAL_Delay(5);   // 确保接受数据完整性
     if(rx2_pointer == LORA_cntPre)				//如果上一次的值和这次相同，则说明接收完毕
     {
-      rx2_pointer = 0;							//清0接收计数
+	  rx2_frame_ready = 1;						// 冻结当前帧，防止解析期间被中断覆盖
       return REV_OK;								//返回接收完成标志
     }
 	}
@@ -54,8 +78,9 @@ _Bool LORA_WaitRecive(void)
 *****************************************************/
 _Bool LORA_SendCmd(char *cmd, char *res)
 {
-	unsigned char timeOut = 200;
+	unsigned char timeOut = 30;
 
+	LORA_Clear();
 	Usart_SendString(huart2, (unsigned char *)cmd, strlen((const char *)cmd));
 	
 	while(timeOut--)
@@ -65,7 +90,8 @@ _Bool LORA_SendCmd(char *cmd, char *res)
 			if(strstr((const char *)Rx2Buffer, res) != NULL)		//如果检索到关键词
 			{
 				LORA_Clear();									//清空缓存
-				
+				LORA_commandFailures = 0U;
+				LORA_lastCommand = cmd;
 				return 0;
 			}
 		}
@@ -73,6 +99,19 @@ _Bool LORA_SendCmd(char *cmd, char *res)
 		HAL_Delay(10);
 	}
 	
+	if (LORA_lastCommand != cmd)
+	{
+		LORA_lastCommand = cmd;
+		LORA_commandFailures = 0U;
+	}
+	LORA_commandFailures++;
+	if (LORA_commandFailures >= LORA_COMMAND_RETRY_COUNT)
+	{
+		/* 不让缺失的 LoRa 模块永久阻塞主机启动。 */
+		LORA_commandFailures = 0U;
+		return 0;
+	}
+
 	return 1;
 }
 
@@ -191,7 +230,8 @@ void LoraP2PTX(void)
 *****************************************************/
 void LoraP2PRX(void)
 {
-  int Tdata[17];
+  int Tdata[17] = {0};
+  int parse_count;
   
   if(LORA_WaitRecive() == REV_OK)							//如果收到数据
   {
@@ -200,9 +240,15 @@ void LoraP2PRX(void)
       
       /* 处理接受的 Lora 温度数据——作数据整形处理 */ 
       // 数据格式对比： PORT:00,NUM:04,TM:26.8/27.0/27.0/26.8/0.0/0.0,DHT11_H:60.0,DHT11_T:27.7,Pressure:31
-      sscanf((const char *)Rx2Buffer,"PORT:%02d,NUM:%02d,TM:%d.%d/%d.%d/%d.%d/%d.%d/%d.%d/%d.%d,DHT11_H:%d.%d,DHT11_T:%d.%d,Pressure:%d",&LoRaType.DS18B20_PORT,&LoRaType.DS18B20_NUM,
+      parse_count = sscanf((const char *)Rx2Buffer,"PORT:%02d,NUM:%02d,TM:%d.%d/%d.%d/%d.%d/%d.%d/%d.%d/%d.%d,DHT11_H:%d.%d,DHT11_T:%d.%d,Pressure:%d",&LoRaType.DS18B20_PORT,&LoRaType.DS18B20_NUM,
               &Tdata[0],&Tdata[1],&Tdata[2],&Tdata[3],&Tdata[4],&Tdata[5],&Tdata[6],&Tdata[7],&Tdata[8],&Tdata[9],&Tdata[10],&Tdata[11],
               &Tdata[12],&Tdata[13],&Tdata[14],&Tdata[15],&Tdata[16]);
+      if ((parse_count != 19) || (LoRaType.DS18B20_NUM <= 0) ||
+          (LoRaType.DS18B20_NUM > (int)LORA_MAX_SENSOR_COUNT))
+      {
+        LORA_Clear();
+        return;
+      }
       for(uint8_t i=0;i<6;i++){LoRaType.DS18B20_Data[i]=Tdata[i*2]*10+Tdata[i*2+1];}
       LoRaType.DHT11_Humi=Tdata[12]*10+Tdata[13];
       LoRaType.DHT11_Temp=Tdata[14]*10+Tdata[15];
@@ -220,34 +266,40 @@ void LoraP2PRX(void)
       /********************* 通风条件判断 ***********************/ 
       if(SysVariType.vent_open_flag==0)    /* 通风关闭状态-开启条件判断 */
       {
-        if(LoRaType.DS18B20_PORT==0)SysVariType.vent_temp_outmax_num = 0;      /* 异常温度点数归零 */
+        SysVariType.vent_temp_outmax_num = 0;      /* 每个有效报文独立统计异常温度点 */
         /* 逐个判断温度点是否异常 */
-        for(int i=LoRaType.DS18B20_NUM;i>=0;i--)
+        for(uint8_t i = 0U; i < (uint8_t)LoRaType.DS18B20_NUM; i++)
         {
           if(LoRaType.DS18B20_Data[i] > SysVariType.vent_temp) SysVariType.vent_temp_outmax_num++;    /* 超过三个温度点大于设定温度——开启通风 */ 
           if(SysVariType.vent_temp_outmax_num>=3)
           {
             ModbusTx(ModbusType.slave_addr,MudbusFun_writeSingle,modbuswrite_Actioncom,modbuswrite_FwStart);         /* 变频器 正转开始命令 */
-            led1_on(); //!!!调试后删除
-            //SysVariType.vent_open_flag=1; //!!!调试后删除
+            break;  /* ModbusTx 已将该事务标为在途，禁止同一帧重复发命令 */
           }
         }
       }
       else               /* 通风开启状态-关闭条件判断 */
       {
-        for(int i=LoRaType.DS18B20_NUM;i>=0;i--)            /* 关闭条件判断-每一个温度点都低于（设定温度-4） */
+        uint8_t all_below_threshold = 1U;
+        for(uint8_t i = 0U; i < (uint8_t)LoRaType.DS18B20_NUM; i++)
         {
-          if(LoRaType.DS18B20_Data[i] > (SysVariType.vent_temp))break;    /* 每一个温度点均低于（设定温度） */ 
-          if(i==0)
+          if(LoRaType.DS18B20_Data[i] > SysVariType.vent_temp)
           {
-            ModbusTx(ModbusType.slave_addr,MudbusFun_writeSingle,modbuswrite_Actioncom,modbuswrite_FwStop);          /* 变频器 正转停止命令 */
-            led1_off(); //!!!调试后删除
-           //SysVariType.vent_open_flag=0; //!!!调试后删除
+            all_below_threshold = 0U;
+            break;
           }
+        }
+        if (all_below_threshold != 0U)
+        {
+          ModbusTx(ModbusType.slave_addr,MudbusFun_writeSingle,modbuswrite_Actioncom,modbuswrite_FwStop);          /* 变频器 正转停止命令 */
         }
       }
 
       LORA_Clear();       /* 清空 Lora 接收数据缓存 */
+    }
+    else
+    {
+      LORA_Clear();       /* 丢弃非温度帧，释放接收缓冲区 */
     }
   }
 }

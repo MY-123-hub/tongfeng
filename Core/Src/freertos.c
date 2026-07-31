@@ -172,6 +172,9 @@ void StartLoRaTask(void const * argument)
 
     /* DGUS 触摸数据应答 */
     DGUS_TouchAck();
+
+    /* 避免同优先级任务被无延迟轮询长期挤占。 */
+    osDelay(1);
   }
   /* USER CODE END StartLoRaTask */
 }
@@ -220,8 +223,8 @@ void StartModBusTask(void const * argument)
     /* 处理 Modbus 接收数据 */
     ModBusRxProc();
     
-    /* 延时 1000 tick，执行周期 1s */
-    osDelay(1000);
+    /* 回包应在毫秒级处理，避免阻塞下一条变频器命令。 */
+    osDelay(10);
   }
   /* USER CODE END StartModBusTask */
 }
