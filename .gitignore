@@ -14,11 +14,14 @@
 *.map
 *.lst
 
-# MDK-ARM generated
-MDK-ARM/*/
-MDK-ARM/JLink*
-MDK-ARM/RTE/
-MDK-ARM/DebugConfig/
+# MDK-ARM generated (applies to both firmware directories)
+**/MDK-ARM/*/
+**/MDK-ARM/JLink*
+**/MDK-ARM/RTE/
+**/MDK-ARM/DebugConfig/
+
+# Keil per-user workspace state (new files only; the existing tracked file is kept unchanged)
+*.uvguix.*
 
 # STM32CubeMX
 .mxproject
