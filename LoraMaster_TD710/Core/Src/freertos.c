@@ -30,7 +30,6 @@
 #include "lora.h"
 #include "modbus.h"
 #include "DGUS.h"
-#include "dip_swich.h"
 
 /* USER CODE END Includes */
 
@@ -172,11 +171,6 @@ void StartLoRaTask(void const * argument)
   uint32_t last_send_ms = 0U;  /* 上次发送命令的时刻 */
 #endif
 
-  /* ===== 拨码开关测试（每 0.5s 发一次十六进制值，经 LoRa 透传）===== */
-#if 1
-  uint32_t dip_tick_ms = 0U;   /* 拨码测试毫秒计数（任务周期 1ms） */
-#endif
-
   /* Infinite loop */
   for(;;)
   {
@@ -185,15 +179,6 @@ void StartLoRaTask(void const * argument)
 
     /* DGUS 触摸数据应答 */
     DGUS_TouchAck();
-
-    /* ===== 拨码开关测试：每 0.5s 读一次并通过 LoRa 发十六进制 ===== */
-#if 1
-    dip_tick_ms++;
-    if ((dip_tick_ms % 500U) == 0U)
-    {
-      DIP_SendHexViaLoRa(DIP_Switch_Read());
-    }
-#endif
 
     /* ===== 测试模式（暂时注释）===== */
 #if 0

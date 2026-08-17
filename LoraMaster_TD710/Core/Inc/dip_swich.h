@@ -27,7 +27,6 @@ extern "C" {
 
 void DIP_Switch_Init(void);
 uint8_t DIP_Switch_Read(void);
-void DIP_SendHexViaLoRa(uint8_t val);
 
 #ifdef __cplusplus
 }

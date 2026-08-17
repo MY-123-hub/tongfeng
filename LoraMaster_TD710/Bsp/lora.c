@@ -1,6 +1,8 @@
 ﻿#include "lora.h"
 
 
+#include "dip_swich.h"
+
 LoRaTypeDef LoRaType = {0};
 uint16_t LORA_cntPre = 0;
 static char *LORA_lastCommand;
@@ -192,8 +194,14 @@ void LORA_Init(void)
   while(LORA_SendCmd("AT+LBT=OFF\r\n", "OK"))        // LBT：关闭 ——回复判定："OK"；开启后 LoRa 发送前进行信道状态
     HAL_Delay(50);	
   
-  while(LORA_SendCmd("AT+ADDR=88\r\n", "OK"))        // 目标地址：88 ——回复判定："OK"
-    HAL_Delay(50);	
+  {
+    char cmd_addr[16];
+    uint8_t dip_addr = DIP_Switch_Read();
+
+    sprintf(cmd_addr, "AT+ADDR=%u\r\n", (unsigned int)dip_addr);
+    while(LORA_SendCmd(cmd_addr, "OK"))
+      HAL_Delay(50);
+  }
   
   while(LORA_SendCmd("AT+LRTO=3\r\n", "OK"))        // 超时重传时间：3s ——回复判定："OK"
     HAL_Delay(50);	
