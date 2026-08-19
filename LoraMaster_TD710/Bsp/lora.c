@@ -1,8 +1,6 @@
 ﻿#include "lora.h"
 
 
-#include "dip_swich.h"
-
 LoRaTypeDef LoRaType = {0};
 uint16_t LORA_cntPre = 0;
 static char *LORA_lastCommand;
@@ -194,14 +192,8 @@ void LORA_Init(void)
   while(LORA_SendCmd("AT+LBT=OFF\r\n", "OK"))        // LBT：关闭 ——回复判定："OK"；开启后 LoRa 发送前进行信道状态
     HAL_Delay(50);	
   
-  {
-    char cmd_addr[16];
-    uint8_t dip_addr = DIP_Switch_Read();
-
-    sprintf(cmd_addr, "AT+ADDR=%u\r\n", (unsigned int)dip_addr);
-    while(LORA_SendCmd(cmd_addr, "OK"))
-      HAL_Delay(50);
-  }
+  while(LORA_SendCmd("AT+ADDR=88\r\n", "OK"))        // 目标地址：88 ——回复判定："OK"
+    HAL_Delay(50);	
   
   while(LORA_SendCmd("AT+LRTO=3\r\n", "OK"))        // 超时重传时间：3s ——回复判定："OK"
     HAL_Delay(50);	
@@ -227,6 +219,71 @@ void LORA_Init(void)
 *****************************************************/
 void LoraP2PTX(void)
 {
+	char tx_buffer[UART_RX_BUFFER_SIZE];
+	int tx_len;
+	int temperature[6];
+	int humidity;
+	int environment_temperature;
+	int pressure;
+
+	/*
+	 * 第一版控制室链路直接复用从机 -> 主机的温度帧格式。
+	 * 控制室当前固件已经能解析该格式，因此无需先修改控制室即可验证
+	 * 主机 -> 控制室的 LoRa 通信。
+	 */
+	if ((LoRaType.DS18B20_NUM <= 0) ||
+		(LoRaType.DS18B20_NUM > (int)LORA_MAX_SENSOR_COUNT))
+	{
+		return;
+	}
+
+	/* 复制共享数据，避免格式化期间被串口接收中断更新。 */
+	{
+		uint32_t primask = __get_PRIMASK();
+		__disable_irq();
+		memcpy(temperature, (const void *)LoRaType.DS18B20_Data, sizeof(temperature));
+		humidity = LoRaType.DHT11_Humi;
+		environment_temperature = LoRaType.DHT11_Temp;
+		pressure = LoRaType.WindPressure;
+		if (primask == 0U)
+		{
+			__enable_irq();
+		}
+	}
+
+	/* 所有温湿度值均按 0.1 单位存储，禁止在 STM32F1 上使用浮点格式化。 */
+	tx_len = snprintf(tx_buffer, sizeof(tx_buffer),
+		"PORT:%02d,NUM:%02d,TM:%d.%d/%d.%d/%d.%d/%d.%d/%d.%d/%d.%d,DHT11_H:%d.%d,DHT11_T:%d.%d,Pressure:%d\r\n",
+		LoRaType.DS18B20_PORT, LoRaType.DS18B20_NUM,
+		temperature[0] / 10, temperature[0] % 10,
+		temperature[1] / 10, temperature[1] % 10,
+		temperature[2] / 10, temperature[2] % 10,
+		temperature[3] / 10, temperature[3] % 10,
+		temperature[4] / 10, temperature[4] % 10,
+		temperature[5] / 10, temperature[5] % 10,
+		humidity / 10, humidity % 10,
+		environment_temperature / 10, environment_temperature % 10,
+		pressure / 10);
+
+	if ((tx_len > 0) && ((size_t)tx_len < sizeof(tx_buffer)))
+	{
+		LORA_SendData((unsigned char *)tx_buffer, (unsigned short)tx_len);
+	}
+}
+
+/*****************************************************
+  * 函数名称：LoraControlRoomTestSend
+  * 函数功能：主机 -> 控制室 LoRa 链路测试发送
+  * 说明：    使用控制室当前已支持的从机温度帧格式；不依赖从机数据。
+*****************************************************/
+void LoraControlRoomTestSend(void)
+{
+	static const char test_frame[] =
+		"PORT:88,NUM:06,TM:10.0/11.0/12.0/13.0/14.0/15.0,"
+		"DHT11_H:60.0,DHT11_T:25.0,Pressure:30\r\n";
+
+	LORA_SendData((unsigned char *)test_frame,
+		(unsigned short)(sizeof(test_frame) - 1U));
 }
 
 /*****************************************************

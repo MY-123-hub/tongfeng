@@ -1,4 +1,7 @@
-﻿#include "dip_swich.h"
+#include "dip_swich.h"
+#include "usart.h"
+#include "stdio.h"
+#include "string.h"
 
 /**
  * @brief  拨码开关 GPIO 初始化：PA6/PA7/PB0/PB1 配置为输入上拉
@@ -47,4 +50,18 @@ uint8_t DIP_Switch_Read(void)
     if (HAL_GPIO_ReadPin(DIP_BIT3_GPIO_Port, DIP_BIT3_Pin) == GPIO_PIN_RESET) { val |= (1U << 3); }
 
     return val;
+}
+
+/**
+ * @brief  将拨码值格式化为十六进制文本，经 LoRa 串口(huart2)透传发出
+ * @note   例：val=10 → 发送 "0x0A\r\n"；val=15 → "0x0F\r\n"（ASCII 文本，串口助手可见）
+ * @param  val：要发送的 4 位拨码值（0~15）
+ * @retval 无
+ */
+void DIP_SendHexViaLoRa(uint8_t val)
+{
+    char buf[8];
+
+    sprintf(buf, "0x%02X\r\n", val);
+    Usart_SendString(huart2, (unsigned char *)buf, (unsigned short)strlen(buf));
 }

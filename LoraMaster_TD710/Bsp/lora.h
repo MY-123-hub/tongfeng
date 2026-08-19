@@ -38,6 +38,7 @@ extern LoRaTypeDef LoRaType;
 /* 函数声明 */
 void LORA_Init(void);
 void LoraP2PTX(void);
+void LoraControlRoomTestSend(void);
 void LoraP2PRX(void);
 
 
