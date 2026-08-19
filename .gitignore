@@ -1,0 +1,14 @@
+# Keil MDK-ARM generated build artifacts
+**/MDK-ARM/**/*.axf
+**/MDK-ARM/**/*.crf
+**/MDK-ARM/**/*.d
+**/MDK-ARM/**/*.dep
+**/MDK-ARM/**/*.hex
+**/MDK-ARM/**/*.htm
+**/MDK-ARM/**/*.lnp
+**/MDK-ARM/**/*.lst
+**/MDK-ARM/**/*.map
+**/MDK-ARM/**/*.o
+**/MDK-ARM/**/*.uvguix.*
+**/MDK-ARM/RTE/_*/RTE_Components.h
+**/MDK-ARM/**/LoraSlaveV1.0
