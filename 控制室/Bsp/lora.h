@@ -7,6 +7,7 @@
 #include "gpio.h"
 #include "usart.h"
 #include "modbus.h"
+#include "lora_protocol.h"
 
 
 /**
@@ -32,13 +33,16 @@ typedef struct
 
 /* 变量声明 */
 extern LoRaTypeDef LoRaType;
+extern volatile uint32_t LoraControlTemperatureRxCount;
+extern volatile uint32_t LoraControlUart1TxCount;
+extern volatile uint32_t LoraControlUart1TxErrorCount;
 
 
 
 /* 函数声明 */
 void LORA_Init(void);
-void LoraP2PTX(void);
 void LoraP2PRX(void);
+void LoraProtocolFeedByte(uint8_t data);
 
 
 #endif /*__LORA_H__*/

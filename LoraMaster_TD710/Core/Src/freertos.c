@@ -172,8 +172,8 @@ void StartLoRaTask(void const * argument)
   uint32_t last_send_ms = 0U;  /* 上次发送命令的时刻 */
 #endif
 
-  /* ===== 控制室链路测试（每 100ms 主动发送固定测试数据）===== */
-#if 1
+  /* ===== 旧控制室链路测试已关闭，数据由主从轮询链路上报。 ===== */
+#if 0
   uint32_t control_room_tick_ms = 0U;   /* 控制室上报毫秒计数（任务周期 1ms） */
 #endif
 
@@ -186,8 +186,8 @@ void StartLoRaTask(void const * argument)
     /* DGUS 触摸数据应答 */
     DGUS_TouchAck();
 
-    /* ===== 控制室链路测试：不依赖从机，复用控制室已支持的 TM 帧格式 ===== */
-#if 1
+    /* ===== 旧控制室链路测试已关闭。 ===== */
+#if 0
     control_room_tick_ms++;
     if ((control_room_tick_ms % 100U) == 0U)
     {

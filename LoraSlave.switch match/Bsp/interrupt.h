@@ -12,6 +12,6 @@ typedef enum {
 SensorType Sensor_Detect(GPIO_TypeDef *GPIOx, uint16_t PINx);
 
 extern volatile uint16_t time_100ms;
-extern volatile uint8_t Rx2Buffer[100], rx2_pointer, rx2_data;
+extern volatile uint8_t Rx2Buffer[128], rx2_pointer, rx2_data;
 
 #endif /*__INTERRUPT_H__*/
