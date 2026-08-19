@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DGUS 显示屏任务 — 代码详解</title>
+<style>
+  :root {
+    --bg: #fff;
+    --text: #1a1a1a;
+    --text-secondary: #555;
+    --border: #e5e5e5;
+    --code-bg: #f8f8f8;
+    --accent: #000;
+    --comment: #999;
+    --keyword: #000;
+    --string: #555;
+    --func: #000;
+    --num: #666;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.8;
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 60px 24px 120px;
+  }
+  h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; letter-spacing: -0.5px; }
+  h2 { font-size: 20px; font-weight: 600; margin: 48px 0 16px; padding-top: 24px; border-top: 1px solid var(--border); }
+  h3 { font-size: 16px; font-weight: 600; margin: 32px 0 12px; }
+  h4 { font-size: 14px; font-weight: 600; margin: 24px 0 8px; color: var(--text-secondary); }
+  p { margin: 12px 0; font-size: 15px; }
+  ul, ol { margin: 8px 0 8px 20px; font-size: 15px; }
+  li { margin: 4px 0; }
+  .subtitle { color: var(--text-secondary); font-size: 14px; margin-bottom: 32px; }
+  code {
+    background: var(--code-bg);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-family: "SF Mono", "Cascadia Code", "Consolas", monospace;
+    font-size: 13px;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    font-family: "SF Mono", "Cascadia Code", "Consolas", monospace;
+    font-size: 13px;
+    line-height: 1.7;
+    margin: 16px 0;
+    white-space: pre;
+  }
+  pre .cm { color: #999; font-style: italic; }
+  pre .kw { color: #000; font-weight: 600; }
+  pre .fn { color: #000; font-weight: 600; }
+  pre .nu { color: #666; }
+  pre .st { color: #555; }
+  pre .pp { color: #000; }
+  pre .hl { background: #ff0; display: inline-block; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 14px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  th { font-weight: 600; background: var(--code-bg); }
+  .callout {
+    background: #fafafa;
+    border-left: 3px solid #000;
+    padding: 14px 18px;
+    margin: 20px 0;
+    font-size: 14px;
+    border-radius: 0 4px 4px 0;
+  }
+  .callout-title { font-weight: 600; margin-bottom: 4px; }
+  .tag {
+    display: inline-block;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 0 8px;
+    font-size: 12px;
+    margin-right: 6px;
+    font-family: "SF Mono", "Cascadia Code", "Consolas", monospace;
+  }
+  .arch-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+    margin: 16px 0;
+  }
+  .arch-box {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+    text-align: center;
+  }
+  .arch-box .title { font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+  .arch-box .desc { font-size: 13px; color: var(--text-secondary); line-height: 1.6; }
+  .flow-arrow {
+    text-align: center;
+    font-size: 20px;
+    color: var(--text-secondary);
+    margin: 4px 0;
+  }
+  .file-path { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+</style>
+</head>
+<body>
+
+<h1>DGUS 显示屏任务 — 代码详解</h1>
+<p class="subtitle">LoraMasterV1.1 · 粮仓通风控制系统 · STM32F103C8T6 + FreeRTOS</p>
+
+<!-- ============================================================ -->
+<h2>一、系统架构概览</h2>
+
+<p>DGUS 屏是<strong>迪文（DWEN）串口触摸屏</strong>，通过 USART1 与 STM32 通信。整个显示屏任务涉及以下文件：</p>
+
+<table>
+  <tr><th>文件</th><th>角色</th></tr>
+  <tr><td><code>Core/Src/freertos.c</code></td><td>FreeRTOS 任务主体 — <code>StartDGUSTask</code></td></tr>
+  <tr><td><code>Bsp/DGUS.h</code></td><td>屏地址枚举 + 函数声明</td></tr>
+  <tr><td><code>Bsp/DGUS.c</code></td><td>DGUS 驱动层 — 清缓存 / 等待接收 / 写数据 / 触摸应答</td></tr>
+  <tr><td><code>Core/Src/usart.c</code></td><td>USART1 初始化 + 发送函数 + 中断接收回调</td></tr>
+  <tr><td><code>Bsp/lora.h</code></td><td>LoRaTypeDef 结构体 — 数据来源（传感器数据）</td></tr>
+  <tr><td><code>Core/Inc/main.h</code></td><td>SysVariTypeDef — 通风系统变量</td></tr>
+</table>
+
+<div class="arch-grid">
+  <div class="arch-box">
+    <div class="title">📡 LoRa 从机</div>
+    <div class="desc">远端传感器节点<br>采集温度/湿度/风压</div>
+  </div>
+  <div class="arch-box">
+    <div class="title">🔵 STM32 主机</div>
+    <div class="desc">LoRa 接收 → 解析数据<br>→ 判断通风 → 驱动屏幕</div>
+  </div>
+  <div class="arch-box">
+    <div class="title">📺 DGUS 串口屏</div>
+    <div class="desc">显示粮温/湿度/风速<br>触摸设定工作模式</div>
+  </div>
+</div>
+
+<div class="callout">
+  <div class="callout-title">数据流向</div>
+  LoRa 从机（传感器）→ LoRa 模块 AT 指令 → USART2 → LoRaTask 解析 → <code>LoRaType</code> 全局结构体 → <strong>DGUSTask 读取 → USART1 → DGUS 屏幕显示</strong>
+</div>
+
+<!-- ============================================================ -->
+<h2>二、硬件连接</h2>
+
+<table>
+  <tr><th>外设</th><th>STM32 引脚</th><th>波特率</th><th>用途</th></tr>
+  <tr><td>USART1</td><td>PA9 (TX) / PA10 (RX)</td><td>115200</td><td>连接 DGUS 触摸屏</td></tr>
+  <tr><td>USART2</td><td>PA2 (TX) / PA3 (RX)</td><td>115200</td><td>连接 LoRa 无线模块</td></tr>
+  <tr><td>USART3</td><td>PB10 (TX) / PB11 (RX)</td><td>9600</td><td>RS485 Modbus 变频器</td></tr>
+</table>
+
+<p>DGUS 屏通信电平为 TTL（3.3V / 5V 兼容），与 STM32 的 USART1 直连，无需 RS232 电平转换。</p>
+
+<!-- ============================================================ -->
+<h2>二、DGUS 通信协议</h2>
+
+<p>DGUS 屏使用迪文自家指令集，数据帧格式如下：</p>
+
+<table>
+  <tr><th>字节偏移</th><th>0-1</th><th>2</th><th>3</th><th>4-5</th><th>6-7</th></tr>
+  <tr><td><strong>含义</strong></td><td>帧头 0x5A 0xA5</td><td>数据长度</td><td>指令 0x82（写变量）</td><td>变量地址（大端）</td><td>数据（大端）</td></tr>
+</table>
+
+<div class="callout">
+  <div class="callout-title">指令 0x82 — 写变量存储区</div>
+  DGUS 屏内部有一块变量存储空间（地址 0x0000–0xFFFF），每个地址存 2 字节数据。向某个地址写入数据，屏幕对应控件就会自动刷新显示。<br><br>
+  例如：向 <code>0x3102</code> 写入 <code>0x0019</code>（即 25℃），屏幕上的"粮面温度"控件就会显示 25.0℃。
+</div>
+
+<!-- ============================================================ -->
+<h2>四、代码逐行详解</h2>
+
+<!-- ---------- DGUS.h ---------- -->
+<h3>4.1 DGUS.h — 头文件</h3>
+<div class="file-path">📄 Bsp/DGUS.h</div>
+
+<pre><span class="kw">#ifndef</span> __DGUS_H__
+<span class="kw">#define</span> __DGUS_H__
+
+<span class="kw">#include</span> <span class="st">"main.h"</span>
+<span class="kw">#include</span> <span class="st">"stdio.h"</span>
+<span class="kw">#include</span> <span class="st">"string.h"</span>
+<span class="kw">#include</span> <span class="st">"usart.h"</span>
+<span class="kw">#include</span> <span class="st">"lora.h"</span>                    <span class="cm">// 需要访问 LoRaType 传感器数据</span></pre>
+
+<h4>接收状态宏</h4>
+<pre><span class="kw">#define</span> REV_WAIT    1                  <span class="cm">// 接收未完成 — 数据还在传输中</span>
+<span class="kw">#define</span> REV_OK      0                  <span class="cm">// 接收完成 — 一帧数据已收齐</span></pre>
+
+<p>这两个宏是 DGUS 串口通信的<strong>状态判断基础</strong>。由于 USART 是逐字节中断接收，程序通过比较两次检查之间接收指针是否变化，来判断一帧数据是否传输完毕。</p>
+
+<h4>DGUS 屏幕变量地址枚举</h4>
+<pre><span class="kw">typedef</span> <span class="kw">enum</span>
+{
+    DGUS_GrainHumi     = <span class="nu">0x3100</span>,       <span class="cm">/* 粮面湿度  — 屏幕地址 0x3100 */</span>
+    DGUS_GrainTemp     = <span class="nu">0x3102</span>,       <span class="cm">/* 粮面温度  — 屏幕地址 0x3102 */</span>
+    DGUS_GrainSpeed    = <span class="nu">0x3104</span>,       <span class="cm">/* 粮面风速  — 屏幕地址 0x3104 */</span>
+    DGUS_EnvirHumi     = <span class="nu">0x3106</span>,       <span class="cm">/* 环境湿度  — 屏幕地址 0x3106 */</span>
+    DGUS_EnvirTemp     = <span class="nu">0x3108</span>,       <span class="cm">/* 环境温度  — 屏幕地址 0x3108 */</span>
+} DGUSWriteAddrTypeNum;</pre>
+
+<p>每个地址间隔 2 字节（0x3100 → 0x3102 → 0x3104 …），因为 DGUS 每个变量地址占 2 字节。这些地址与屏幕 UI 工程中的控件绑定——屏幕设计师在 DGUS 软件里把"温度显示"控件绑到 <code>0x3102</code>，STM32 往这个地址写数据，控件就自动刷新。</p>
+
+<h4>函数声明</h4>
+<pre><span class="kw">void</span> <span class="fn">DGUS_WriteSingleData</span>(<span class="kw">int</span> S_Addr, <span class="kw">int</span> Data);   <span class="cm">// 向屏幕写一个数据</span>
+<span class="kw">void</span> <span class="fn">DGUS_TouchAck</span>(<span class="kw">void</span>);                           <span class="cm">// 处理触摸屏按键应答</span></pre>
+
+<!-- ---------- DGUS.c ---------- -->
+<h3>4.2 DGUS.c — 驱动实现</h3>
+<div class="file-path">📄 Bsp/DGUS.c</div>
+
+<h4>4.2.1 全局变量</h4>
+<pre><span class="kw">uint16_t</span> DGUS_cntPre = <span class="nu">0</span>;               <span class="cm">// 上一次检查时的接收指针快照</span></pre>
+<p>用于配合 <code>rx1_pointer</code> 判断接收是否完成（两者相等 → 指针不再增长 → 接收完毕）。</p>
+
+<h4>4.2.2 DGUS_Clear — 清空接收缓存</h4>
+<pre><span class="kw">void</span> <span class="fn">DGUS_Clear</span>(<span class="kw">void</span>)
+{
+    <span class="fn">memset</span>(Rx1Buffer, <span class="nu">0</span>, <span class="kw">sizeof</span>(Rx1Buffer));  <span class="cm">// 将 USART1 接收缓冲区全部置零</span>
+    rx1_pointer = <span class="nu">0</span>;                            <span class="cm">// 接收指针归零，从头开始收新一帧</span>
+}</pre>
+
+<table>
+  <tr><th>行</th><th>说明</th></tr>
+  <tr><td><code>memset(Rx1Buffer, 0, …)</code></td><td>把 100 字节的接收缓存全部填 0。发送新指令前必须清空，否则残留的旧数据会干扰 WaitRecive 的判断逻辑</td></tr>
+  <tr><td><code>rx1_pointer = 0</code></td><td>接收写指针回到数组头部。后续 USART1 中断会把新收到的字节从 Rx1Buffer[0] 开始存放</td></tr>
+</table>
+
+<h4>4.2.3 DGUS_WaitRecive — 等待接收完成（核心）</h4>
+<pre><span class="kw">_Bool</span> <span class="fn">DGUS_WaitRecive</span>(<span class="kw">void</span>)
+{
+    <span class="kw">if</span>(rx1_pointer == <span class="nu">0</span>)                    <span class="cm">// [1] 还没收到任何数据</span>
+        <span class="kw">return</span> REV_WAIT;                     <span class="cm">//     → 直接返回"未完成"</span>
+
+    <span class="kw">if</span>(rx1_pointer == DGUS_cntPre)        <span class="cm">// [2] 指针和上一次快照相同</span>
+    {                                        <span class="cm">//     → 可能接收已停止</span>
+        <span class="fn">HAL_Delay</span>(<span class="nu">5</span>);                       <span class="cm">// [3] 等 5ms —— 消抖确认</span>
+        <span class="kw">if</span>(rx1_pointer == DGUS_cntPre)      <span class="cm">// [4] 5ms 后指针依然没变</span>
+        {                                    <span class="cm">//     → 确认接收完毕</span>
+            rx1_pointer = <span class="nu">0</span>;                <span class="cm">// [5] 归零指针，准备处理数据</span>
+            <span class="kw">return</span> REV_OK;                   <span class="cm">// [6] 返回"接收完成"</span>
+        }
+    }
+    DGUS_cntPre = rx1_pointer;              <span class="cm">// [7] 保存当前指针快照，供下次比较</span>
+    <span class="kw">return</span> REV_WAIT;                        <span class="cm">// [8] 返回"未完成"</span>
+}</pre>
+
+<div class="callout">
+  <div class="callout-title">🔑 核心算法：指针停滞检测法</div>
+  这个函数判断"一帧数据是否收完"的思路非常经典：<br><br>
+  <strong>原理：</strong>串口数据是逐字节到达的。数据在传输时，<code>rx1_pointer</code> 会不断增长。当发送方停止发送后，指针停止增长。程序记录上一次的指针值 <code>DGUS_cntPre</code>，如果两次检查指针没变（且经过 5ms 消抖），说明发送方已经发完——这一帧收齐了。<br><br>
+  <strong>5ms 延时的作用：</strong>防止误判。比如在两次检查的间隙刚好所有数据到达，指针相同但其实是巧合。等 5ms 再查一次，如果还是相同，才能确认真的收完了。
+</div>
+
+<h4>4.2.4 DGUS_WriteSingleData — 向屏幕写单个数据</h4>
+<pre><span class="kw">void</span> <span class="fn">DGUS_WriteSingleData</span>(<span class="kw">int</span> S_Addr, <span class="kw">int</span> Data)
+{
+    <span class="kw">char</span> Com_all[<span class="nu">16</span>] = {
+        <span class="nu">0x5A</span>, <span class="nu">0xA5</span>,                      <span class="cm">// [1] 帧头</span>
+        <span class="nu">0x05</span>,                            <span class="cm">// [2] 数据长度 = 5 字节（指令1 + 地址2 + 数据2）</span>
+        <span class="nu">0x82</span>,                            <span class="cm">// [3] 写变量存储区指令</span>
+        S_Addr/<span class="nu">256</span>, S_Addr%<span class="nu">256</span>,        <span class="cm">// [4] 变量地址（拆成高字节 + 低字节，大端序）</span>
+        Data/<span class="nu">256</span>,   Data%<span class="nu">256</span>          <span class="cm">// [5] 数据值（拆成高字节 + 低字节）</span>
+    };
+
+    <span class="fn">DGUS_Clear</span>();                       <span class="cm">// [6] 发前先清空接收缓存</span>
+    <span class="fn">Usart_SendString</span>(huart1,            <span class="cm">// [7] 通过 USART1 发送 8 字节指令</span>
+        (<span class="kw">unsigned char</span> *)Com_all, <span class="nu">8</span>);
+}</pre>
+
+<table>
+  <tr><th>字节</th><th>值</th><th>含义</th></tr>
+  <tr><td>0–1</td><td><code>0x5A 0xA5</code></td><td>DGUS 帧头，所有指令固定以此开头</td></tr>
+  <tr><td>2</td><td><code>0x05</code></td><td>后面还有 5 字节（指令 1B + 地址 2B + 数据 2B）</td></tr>
+  <tr><td>3</td><td><code>0x82</code></td><td>指令码：写变量存储区</td></tr>
+  <tr><td>4–5</td><td><code>S_Addr/256, S_Addr%256</code></td><td>变量地址，大端序。如 0x3102 → 0x31, 0x02</td></tr>
+  <tr><td>6–7</td><td><code>Data/256, Data%256</code></td><td>数据值，大端序。如 250 (0x00FA) → 0x00, 0xFA</td></tr>
+</table>
+
+<div class="callout">
+  <div class="callout-title">📐 大端序拆分</div>
+  DGUS 协议要求多字节数据按<strong>大端序（Big-Endian）</strong>传输，即高字节在前。<br><br>
+  <code>S_Addr / 256</code> = 整除 256，得到高 8 位（相当于右移 8 位）<br>
+  <code>S_Addr % 256</code> = 取模 256，得到低 8 位<br><br>
+  例：地址 <code>0x3102</code> → <code>0x3102 / 256 = 0x31</code>，<code>0x3102 % 256 = 0x02</code>
+</div>
+
+<h4>4.2.5 DGUS_TouchAck — 触摸按键应答（LoRaTask 中调用）</h4>
+
+<div class="callout">
+  <div class="callout-title">⚠️ 注意</div>
+  虽然这个函数写在 <code>DGUS.c</code> 里，但它在 <strong>LoRaTask</strong>（1ms 周期）中被调用，而不是 DGUSTask。DGUSTask 只负责定时刷新屏幕数据。
+</div>
+
+<pre><span class="kw">void</span> <span class="fn">DGUS_TouchAck</span>(<span class="kw">void</span>)
+{
+    <span class="kw">if</span>((<span class="fn">DGUS_WaitRecive</span>() == REV_OK) &amp;      <span class="cm">// [1] 先确认收到一帧完整数据</span>
+       (Rx1Buffer[<span class="nu">0</span>] == <span class="nu">0x5A</span>) &amp;               <span class="cm">// [2] 且帧头第1字节 = 0x5A</span>
+       (Rx1Buffer[<span class="nu">1</span>] == <span class="nu">0xA5</span>))                 <span class="cm">// [3] 且帧头第2字节 = 0xA5 → 是有效DGUS帧</span>
+    {
+        <span class="kw">if</span>(Rx1Buffer[<span class="nu">3</span>] == <span class="nu">0x83</span>)              <span class="cm">// [4] 指令码 = 0x83 → 触摸坐标数据上报</span>
+        {</pre>
+
+<p>DGUS 屏被触摸后，会自动通过串口上报一帧数据，格式如下：</p>
+
+<table>
+  <tr><th>字节</th><th>0–1</th><th>2</th><th>3</th><th>4–5</th><th>6–7</th></tr>
+  <tr><td><strong>值</strong></td><td>0x5A 0xA5</td><td>长度</td><td>0x83（触摸上报）</td><td>触点 X 坐标</td><td>触点 Y 坐标</td></tr>
+</table>
+
+<p>系统通过判断<strong>触摸坐标</strong>来识别用户按了哪个按钮：</p>
+
+<pre>        <span class="kw">if</span>((Rx1Buffer[<span class="nu">4</span>] == <span class="nu">0x29</span>) &amp; (Rx1Buffer[<span class="nu">5</span>] == <span class="nu">0x00</span>))  <span class="cm">// 坐标 (0x29, 0x00)</span>
+        {                                                        <span class="cm">// → 用户按了"降水模式"按钮</span>
+            <span class="fn">DGUS_Clear</span>();
+            <span class="kw">char</span> Com_all[<span class="nu">20</span>] = { <span class="nu">0x5A</span>, <span class="nu">0xA5</span>, <span class="nu">0x09</span>, <span class="nu">0x82</span>,
+                <span class="nu">0x29</span>, <span class="nu">0x00</span>,                               <span class="cm">// 地址 0x2900</span>
+                <span class="nu">0x00</span>, <span class="nu">0x01</span>, <span class="nu">0x00</span>, <span class="nu">0x00</span>, <span class="nu">0x00</span>, <span class="nu">0x00</span> };  <span class="cm">// 降水=1, 降温=0, 储冷=0</span>
+            <span class="fn">Usart_SendString</span>(huart1, …);               <span class="cm">// 回写屏幕，切换UI状态</span>
+        }</pre>
+
+<table>
+  <tr><th>触控坐标</th><th>对应按钮</th><th>执行动作</th></tr>
+  <tr><td><code>0x29, 0x00</code></td><td>模式设定 → 降水模式</td><td>回写地址 0x2900，设降水=1</td></tr>
+  <tr><td><code>0x29, 0x01</code></td><td>模式设定 → 降温模式</td><td>回写地址 0x2900，设降温=1</td></tr>
+  <tr><td><code>0x29, 0x02</code></td><td>模式设定 → 储冷模式</td><td>回写地址 0x2900，设储冷=1</td></tr>
+  <tr><td><code>0x29, 0x03–0x08</code></td><td>品种选择（6 种粮食）</td><td>回写地址 0x2903，设对应品种位=1</td></tr>
+</table>
+
+<div class="callout">
+  <div class="callout-title">🔑 触摸应答机制的本质</div>
+  DGUS 屏的按钮按下后会<strong>自动上报坐标 + 自动切换按钮的按下/弹起状态</strong>。但"模式选择"这类业务逻辑需要互斥——选了降水就不能同时选降温。<br><br>
+  所以 STM32 收到触摸上报后，<strong>重新发送一帧写指令</strong>覆写对应地址，在单片机端实现互斥逻辑。这就是"应答"的含义——不是简单回一个 ACK，而是主动重写屏幕变量来矫正 UI 状态。
+</div>
+
+<!-- ---------- StartDGUSTask ---------- -->
+<h3>4.3 StartDGUSTask — FreeRTOS 显示屏任务</h3>
+<div class="file-path">📄 Core/Src/freertos.c（第 187–201 行）</div>
+
+<pre><span class="cm">/**
+ * @brief  任务：更新 DGUS 的环境数据
+ *          执行周期：5s
+ */</span>
+<span class="kw">void</span> <span class="fn">StartDGUSTask</span>(<span class="kw">void const</span> * argument)
+{
+    <span class="kw">for</span>(;;)                                     <span class="cm">// [1] FreeRTOS 任务死循环</span>
+    {
+        <span class="fn">DGUS_WriteSingleData</span>(DGUS_GrainTemp,     <span class="cm">// [2] 粮面温度 → 地址 0x3102</span>
+            LoRaType.DS18B20_Data[<span class="nu">0</span>]);        <span class="cm">//     数据来源：第1路DS18B20</span>
+
+        <span class="fn">DGUS_WriteSingleData</span>(DGUS_EnvirHumi,     <span class="cm">// [3] 环境湿度 → 地址 0x3106</span>
+            LoRaType.DHT11_Humi);               <span class="cm">//     数据来源：DHT11湿度值</span>
+
+        <span class="fn">DGUS_WriteSingleData</span>(DGUS_EnvirTemp,     <span class="cm">// [4] 环境温度 → 地址 0x3108</span>
+            LoRaType.DHT11_Temp);               <span class="cm">//     数据来源：DHT11温度值</span>
+
+        <span class="fn">DGUS_WriteSingleData</span>(DGUS_GrainSpeed,    <span class="cm">// [5] 粮面风速 → 地址 0x3104</span>
+            LoRaType.WindPressure);             <span class="cm">//     数据来源：风压传感器</span>
+
+        <span class="fn">osDelay</span>(<span class="nu">5000</span>);                           <span class="cm">// [6] 阻塞 5 秒（5000 个 FreeRTOS tick）</span>
+    }
+}</pre>
+
+<h4>逐行解析</h4>
+
+<table>
+  <tr><th>行</th><th>代码</th><th>解析</th></tr>
+  <tr>
+    <td>[1]</td>
+    <td><code>for(;;)</code></td>
+    <td>FreeRTOS 任务必须是永不退出的无限循环。任务函数一旦 return，RTOS 内核会把该任务视为"自杀"，之后不会再调度它</td>
+  </tr>
+  <tr>
+    <td>[2]</td>
+    <td><code>DGUS_WriteSingleData(DGUS_GrainTemp, LoRaType.DS18B20_Data[0])</code></td>
+    <td>向屏幕地址 <code>0x3102</code> 写入第 1 路 DS18B20 温度值。<br>
+    <code>DS18B20_Data[0]</code> 原始值是实际温度 × 10（如 25.3℃ → 253），屏幕端 UI 工程配置了小数点位数，自动显示为 25.3</td>
+  </tr>
+  <tr>
+    <td>[3]</td>
+    <td><code>DGUS_WriteSingleData(DGUS_EnvirHumi, LoRaType.DHT11_Humi)</code></td>
+    <td>向地址 <code>0x3106</code> 写入环境湿度（%RH）</td>
+  </tr>
+  <tr>
+    <td>[4]</td>
+    <td><code>DGUS_WriteSingleData(DGUS_EnvirTemp, LoRaType.DHT11_Temp)</code></td>
+    <td>向地址 <code>0x3108</code> 写入环境温度</td>
+  </tr>
+  <tr>
+    <td>[5]</td>
+    <td><code>DGUS_WriteSingleData(DGUS_GrainSpeed, LoRaType.WindPressure)</code></td>
+    <td>向地址 <code>0x3104</code> 写入风压值</td>
+  </tr>
+  <tr>
+    <td>[6]</td>
+    <td><code>osDelay(5000)</code></td>
+    <td>让任务进入<strong>阻塞态</strong> 5 秒。阻塞期间 CPU 自动调度其他任务（LoRaTask、ModBusTask）执行。<br>
+    注意：<code>osDelay</code> 不是忙等——它调用 <code>vTaskDelay</code>，将任务移入延时链表，完全释放 CPU</td>
+  </tr>
+</table>
+
+<div class="callout">
+  <div class="callout-title">⚠️ 为什么是 5 秒刷新一次？</div>
+  粮仓温度、湿度是<strong>慢变量</strong>——几分钟才变化零点几度。每秒刷新只会增加串口通信负担，对实际使用毫无意义。<br><br>
+  5 秒是在"数据及时性"和"通信开销"之间的工程权衡。如果对实时性有更高要求（如调试阶段），可改为 <code>osDelay(1000)</code>（1 秒刷新）。
+</div>
+
+<!-- ---------- USART底层 ---------- -->
+<h3>4.4 USART 底层支持</h3>
+<div class="file-path">📄 Core/Src/usart.c</div>
+
+<h4>4.4.1 USART1 初始化</h4>
+<pre><span class="kw">void</span> <span class="fn">MX_USART1_UART_Init</span>(<span class="kw">void</span>)
+{
+    huart1.Instance = USART1;
+    huart1.Init.BaudRate   = <span class="nu">115200</span>;         <span class="cm">// 波特率 115200</span>
+    huart1.Init.WordLength = UART_WORDLENGTH_8B; <span class="cm">// 8 位数据</span>
+    huart1.Init.StopBits   = UART_STOPBITS_1;     <span class="cm">// 1 位停止</span>
+    huart1.Init.Parity     = UART_PARITY_NONE;    <span class="cm">// 无校验</span>
+    huart1.Init.Mode       = UART_MODE_TX_RX;     <span class="cm">// 收发双工</span>
+    huart1.Init.HwFlowCtl  = UART_HWCONTROL_NONE; <span class="cm">// 无硬件流控</span>
+    huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+    <span class="fn">HAL_UART_Init</span>(&amp;huart1);                    <span class="cm">// 调用 HAL 库初始化</span>
+}</pre>
+
+<p>引脚映射（在 <code>HAL_UART_MspInit</code> 中）：<strong>PA9 = TX，PA10 = RX</strong>。中断优先级设为 5（数字越小优先级越高，0 最高）。</p>
+
+<h4>4.4.2 Usart_SendString — 发送函数</h4>
+<pre><span class="kw">void</span> <span class="fn">Usart_SendString</span>(UART_HandleTypeDef USARTx,
+                      <span class="kw">unsigned char</span> *str, <span class="kw">unsigned short</span> len)
+{
+    <span class="kw">unsigned short</span> count = <span class="nu">0</span>;
+    <span class="kw">for</span>(; count &lt; len; count++)
+    {
+        <span class="fn">HAL_UART_Transmit</span>(&amp;USARTx,           <span class="cm">// 逐字节发送</span>
+            (<span class="kw">uint8_t</span> *)str++, <span class="nu">1</span>, HAL_MAX_DELAY); <span class="cm">// 每次发1字节，阻塞等待完成</span>
+    }
+}</pre>
+
+<div class="callout">
+  <div class="callout-title">🔑 为什么逐字节发送而不是 DMA？</div>
+  本项目 DGUS 通信数据量极小（每帧最多 16 字节，每 5 秒发 4 帧共 32 字节），逐字节轮询发送简单可靠。<br><br>
+  <code>HAL_MAX_DELAY</code> 表示无限等待——如果发送寄存器一直不空（硬件故障），函数会永远阻塞。生产环境中可改为有限超时（如 100ms）并检查返回值。
+</div>
+
+<h4>4.4.3 USART1 中断接收回调</h4>
+<pre><span class="kw">uint8_t</span> Rx1Buffer[<span class="nu">100</span>];                   <span class="cm">// USART1 接收环形缓冲区</span>
+<span class="kw">uint8_t</span> rx1_pointer;                     <span class="cm">// 写指针</span>
+<span class="kw">uint8_t</span> rx1_data;                        <span class="cm">// 单字节接收暂存</span>
+
+<span class="kw">void</span> <span class="fn">HAL_UART_RxCpltCallback</span>(UART_HandleTypeDef *huart)
+{
+    <span class="kw">if</span>(huart-&gt;Instance == USART1)
+    {
+        Rx1Buffer[rx1_pointer++] = rx1_data;   <span class="cm">// 存入缓冲区，指针后移</span>
+        <span class="fn">HAL_UART_Receive_IT</span>(&amp;huart1,            <span class="cm">// 重新使能中断接收下一个字节</span>
+            &amp;rx1_data, <span class="nu">1</span>);                   <span class="cm">// （STM32 HAL 每次中断只收1字节）</span>
+    }
+}</pre>
+
+<div class="callout">
+  <div class="callout-title">⚠️ 缓冲区溢出风险</div>
+  Rx1Buffer 只有 100 字节，且没有环形回绕逻辑（<code>rx1_pointer</code> 只增不减，只有 <code>DGUS_Clear()</code> 时归零）。<br><br>
+  如果上位机连续发送超过 100 字节而不给单片机清缓存的机会，<code>rx1_pointer</code> 会越界写坏相邻内存。这是已知的技术债——正常使用时 DGUS 上报帧很短（约 8 字节），不会触发此问题。
+</div>
+
+<!-- ---------- 数据结构 ---------- -->
+<h3>4.5 数据结构 — 数据从哪来</h3>
+<div class="file-path">📄 Bsp/lora.h</div>
+
+<pre><span class="kw">typedef</span> <span class="kw">struct</span>
+{
+    <span class="kw">volatile int</span> DS18B20_PORT, DS18B20_NUM;  <span class="cm">// DS18B20 端口号 / 传感器数量</span>
+    <span class="kw">volatile int</span> DS18B20_Data[<span class="nu">8</span>];           <span class="cm">// 最多 8 路温度值</span>
+    <span class="kw">volatile int</span> DHT11_Humi, DHT11_Temp;     <span class="cm">// DHT11 湿度 / 温度</span>
+    <span class="kw">volatile int</span> WindPressure;               <span class="cm">// 风压传感器</span>
+} LoRaTypeDef;</pre>
+
+<p><code>LoRaType</code> 是全局实例，在 LoRaTask（1ms 周期）中由 <code>LoraP2PRX()</code> 持续更新。DGUSTask 只读不写——这是一个<strong>生产者-消费者模型</strong>，没有用互斥锁保护（因为写入是整字对齐的 int，ARM Cortex-M3 单拷贝原子性保证不会读到"半新半旧"的值）。</p>
+
+<!-- ============================================================ -->
+<h2>五、任务调度全景</h2>
+
+<p>系统 4 个任务的优先级和周期：</p>
+
+<table>
+  <tr><th>任务</th><th>优先级</th><th>周期</th><th>职责</th></tr>
+  <tr><td>StartDefaultTask</td><td>osPriorityNormal</td><td>1ms</td><td>空转（预留）</td></tr>
+  <tr><td>StartLoRaTask</td><td>osPriorityIdle</td><td>~1ms</td><td>LoRa 收发 + 通风判断 + 触摸应答</td></tr>
+  <tr><td><strong>StartDGUSTask</strong></td><td>osPriorityIdle</td><td><strong>5s</strong></td><td>更新屏幕显示数据</td></tr>
+  <tr><td>StartModBusTask</td><td>osPriorityIdle</td><td>1s</td><td>Modbus 变频器通信</td></tr>
+</table>
+
+<div class="callout">
+  <div class="callout-title">🔑 为什么所有任务都是 osPriorityIdle？</div>
+  在 STM32CubeMX + CMSIS-RTOS v1 中，<code>osPriorityIdle</code> 映射到 FreeRTOS 优先级 0（最低）。所有任务同优先级意味着<strong>时间片轮转调度</strong>（configUSE_TIME_SLICING = 1）：<br><br>
+  每个任务运行一个 tick（1ms）后，如果有同优先级的就绪任务，内核强制切换。但因为 DGUSTask 和 ModBusTask 大部分时间在 <code>osDelay</code> 阻塞，实际上 LoRaTask 几乎独占 CPU——这正好满足了 LoRa 通信对实时性的要求。<br><br>
+  <strong>改进建议：</strong>将 LoRaTask 提升到 osPriorityAboveNormal，确保无线数据不丢包。
+</div>
+
+<!-- ============================================================ -->
+<h2>六、完整数据流时序</h2>
+
+<pre>
+时刻 0ms  ─── LoRaTask: LoraP2PRX() 接收传感器数据 → 更新 LoRaType 结构体
+时刻 0ms  ─── DGUSTask: DGUS_WriteSingleData(粮温) → USART1 发 8 字节
+时刻 0ms  ─── DGUSTask: DGUS_WriteSingleData(湿度) → USART1 发 8 字节
+时刻 0ms  ─── DGUSTask: DGUS_WriteSingleData(环温) → USART1 发 8 字节
+时刻 0ms  ─── DGUSTask: DGUS_WriteSingleData(风速) → USART1 发 8 字节
+时刻 0ms  ─── DGUSTask: osDelay(5000) → 进入阻塞态，CPU 让给其他任务
+
+   ... 5 秒内，LoRaTask 运行了约 5000 次，ModBusTask 运行了 5 次 ...
+
+时刻 5000ms ─── DGUSTask 被唤醒 → 重复上述 4 次写屏操作 → 再次阻塞 5 秒
+</pre>
+
+<!-- ============================================================ -->
+<h2>七、潜在问题与改进建议</h2>
+
+<ol>
+  <li><strong>无接收超时保护：</strong><code>DGUS_WaitRecive</code> 如果屏幕完全不回复，指针永远为 0，函数永远返回 <code>REV_WAIT</code>。触摸应答场景没问题（没有触摸就不应该回复），但将来如果有"查询-应答"型指令，需要加超时计数</li>
+  <li><strong>缓冲区无回绕：</strong><code>rx1_pointer</code> 直线增长，100 字节硬上限，建议改为环形缓冲区或加越界检查</li>
+  <li><strong>发送失败未检测：</strong><code>Usart_SendString</code> 不检查 <code>HAL_UART_Transmit</code> 的返回值（HAL_OK / HAL_TIMEOUT / HAL_ERROR），通信故障时静默丢失数据</li>
+  <li><strong>触摸坐标硬编码：</strong>坐标值 <code>0x29, 0x00</code> 等直接写死在代码里，屏幕 UI 一旦调整布局就必须改代码。建议用宏定义集中管理</li>
+  <li><strong>品种选择注释错误：</strong>第 101–112 行的注释全部写的是"品种选择-小麦"，实际 6 个按钮对应 6 种不同粮食，注释应标注正确品种名</li>
+</ol>
+
+<!-- ============================================================ -->
+<h2>八、涉及的源文件清单</h2>
+
+<table>
+  <tr><th>文件</th><th>本任务中用到的部分</th></tr>
+  <tr><td><code>Bsp/DGUS.h</code></td><td>DGUSWriteAddrTypeNum 枚举、函数声明</td></tr>
+  <tr><td><code>Bsp/DGUS.c</code></td><td>DGUS_Clear、DGUS_WaitRecive、DGUS_WriteSingleData、DGUS_TouchAck</td></tr>
+  <tr><td><code>Core/Src/freertos.c</code></td><td>StartDGUSTask 任务函数</td></tr>
+  <tr><td><code>Core/Src/usart.c</code></td><td>MX_USART1_UART_Init、Usart_SendString、HAL_UART_RxCpltCallback (USART1分支)</td></tr>
+  <tr><td><code>Core/Inc/usart.h</code></td><td>huart1 句柄 extern、Rx1Buffer/rx1_pointer 缓冲变量 extern</td></tr>
+  <tr><td><code>Bsp/lora.h</code></td><td>LoRaTypeDef 结构体、LoRaType 全局实例 extern</td></tr>
+  <tr><td><code>Core/Inc/main.h</code></td><td>SysVariTypeDef 通风变量结构体</td></tr>
+</table>
+
+</body>
+</html>
