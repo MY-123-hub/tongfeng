@@ -4,13 +4,12 @@
 #include "main.h"
 
 
-#define REV_WAIT    1   // ½ÓÊÜÎ´Íê³É±êÖ¾
-#define REV_OK      0   // ½ÓÊÜÍê³É±êÖ¾
+#define REV_WAIT    1   // ï¿½ï¿½ï¿½ï¿½Î´ï¿½ï¿½É±ï¿½Ö¾
+#define REV_OK      0   // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½É±ï¿½Ö¾
 
 
 void LORA_Init(void);
 void LORA_SendData(unsigned char *data, unsigned short len);
-void LoraP2PTrans(void);
 
 
 #endif /*__LORA_H__*/

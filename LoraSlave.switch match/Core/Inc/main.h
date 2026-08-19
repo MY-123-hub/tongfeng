@@ -36,14 +36,6 @@ extern "C" {
 
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
-typedef struct
-{
-  uint8_t GZP6897Temperature;
-  uint8_t GZP6897PressurePointer;
-  uint8_t GZP6897PressureAve[10];
-  uint32_t GZP6897Pressure;
-}SysVariTypeDef;
-  
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/
@@ -53,7 +45,7 @@ typedef struct
 
 /* Exported macro ------------------------------------------------------------*/
 /* USER CODE BEGIN EM */
-extern SysVariTypeDef SysVariType;
+
 /* USER CODE END EM */
 
 /* Exported functions prototypes ---------------------------------------------*/
@@ -74,7 +66,7 @@ void Error_Handler(void);
 #define LED3_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
-
+#define DEBUG_LOG 0   /* 1=开启热循环调试打印([D]/[CRC]/[BUF])，0=关闭 */
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus
