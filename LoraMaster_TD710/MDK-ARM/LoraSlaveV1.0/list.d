@@ -1,0 +1,12 @@
+loraslavev1.0\list.o: ../Middlewares/Third_Party/FreeRTOS/Source/list.c
+loraslavev1.0\list.o: D:\stm32keil5\setup\ARM\ARMCC\Bin\..\include\stdlib.h
+loraslavev1.0\list.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/FreeRTOS.h
+loraslavev1.0\list.o: D:\stm32keil5\setup\ARM\ARMCC\Bin\..\include\stddef.h
+loraslavev1.0\list.o: D:\stm32keil5\setup\ARM\ARMCC\Bin\..\include\stdint.h
+loraslavev1.0\list.o: ../Core/Inc/FreeRTOSConfig.h
+loraslavev1.0\list.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/projdefs.h
+loraslavev1.0\list.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/portable.h
+loraslavev1.0\list.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/deprecated_definitions.h
+loraslavev1.0\list.o: ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM3/portmacro.h
+loraslavev1.0\list.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/mpu_wrappers.h
+loraslavev1.0\list.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/list.h
