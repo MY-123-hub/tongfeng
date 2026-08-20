@@ -2,14 +2,284 @@
 
 
 #include "dip_swich.h"
+#include <stdarg.h>
 
 LoRaTypeDef LoRaType = {0};
+volatile uint32_t LoraControlTemperatureRxCount;
+volatile uint32_t LoraControlUart1TxCount;
+volatile uint32_t LoraControlUart1TxErrorCount;
 uint16_t LORA_cntPre = 0;
 static char *LORA_lastCommand;
 static uint8_t LORA_commandFailures;
 
 #define LORA_MAX_SENSOR_COUNT 6U
 #define LORA_COMMAND_RETRY_COUNT 3U
+
+#define LORA_MASTER_GROUP 0x01U
+#define LORA_CONTROL_GROUP 0x00U
+#define LORA_CONTROL_UART1_JSON_SIZE 1024U
+
+static uint8_t s_protocol_rx_buffer[LORA_PROTOCOL_FRAME_MAX_SIZE];
+static volatile uint8_t s_protocol_rx_index;
+static volatile uint8_t s_protocol_rx_expected;
+static volatile uint8_t s_protocol_rx_ready;
+static int16_t s_control_temperature[LORA_PROTOCOL_TEMPERATURE_COUNT];
+static char s_control_uart1_json[LORA_CONTROL_UART1_JSON_SIZE];
+
+static void LoraProtocolResetReceiver(void)
+{
+	uint32_t primask = __get_PRIMASK();
+
+	__disable_irq();
+	s_protocol_rx_index = 0U;
+	s_protocol_rx_expected = 0U;
+	s_protocol_rx_ready = 0U;
+	if (primask == 0U)
+	{
+		__enable_irq();
+	}
+}
+
+static uint16_t LoraProtocolCrc16(const uint8_t *data, uint16_t length)
+{
+	uint16_t crc = 0xFFFFU;
+	uint16_t index;
+	uint8_t bit;
+
+	for (index = 0U; index < length; index++)
+	{
+		crc ^= data[index];
+		for (bit = 0U; bit < 8U; bit++)
+		{
+			if ((crc & 0x0001U) != 0U)
+			{
+				crc = (uint16_t)((crc >> 1U) ^ 0xA001U);
+			}
+			else
+			{
+				crc >>= 1U;
+			}
+		}
+	}
+
+	return crc;
+}
+
+void LoraProtocolFeedByte(uint8_t data)
+{
+	if (s_protocol_rx_ready != 0U)
+	{
+		return;
+	}
+
+	if (s_protocol_rx_index == 0U)
+	{
+		if (data == LORA_PROTOCOL_HEAD_0)
+		{
+			s_protocol_rx_buffer[s_protocol_rx_index++] = data;
+		}
+		return;
+	}
+
+	if (s_protocol_rx_index == 1U)
+	{
+		if (data == LORA_PROTOCOL_HEAD_1)
+		{
+			s_protocol_rx_buffer[s_protocol_rx_index++] = data;
+		}
+		else if (data == LORA_PROTOCOL_HEAD_0)
+		{
+			s_protocol_rx_buffer[0] = data;
+		}
+		else
+		{
+			s_protocol_rx_index = 0U;
+		}
+		return;
+	}
+
+	if (s_protocol_rx_index >= LORA_PROTOCOL_FRAME_MAX_SIZE)
+	{
+		s_protocol_rx_index = 0U;
+		s_protocol_rx_expected = 0U;
+		return;
+	}
+
+	s_protocol_rx_buffer[s_protocol_rx_index++] = data;
+	if (s_protocol_rx_index == LORA_PROTOCOL_HEADER_SIZE)
+	{
+		if (s_protocol_rx_buffer[10] > LORA_PROTOCOL_MAX_PAYLOAD)
+		{
+			s_protocol_rx_index = 0U;
+			return;
+		}
+		s_protocol_rx_expected = (uint8_t)(LORA_PROTOCOL_HEADER_SIZE +
+			s_protocol_rx_buffer[10] + LORA_PROTOCOL_CRC_SIZE);
+	}
+
+	if ((s_protocol_rx_expected != 0U) &&
+		(s_protocol_rx_index == s_protocol_rx_expected))
+	{
+		s_protocol_rx_ready = 1U;
+	}
+}
+
+static uint8_t LoraProtocolTakeFrame(LoraProtocolFrame *frame)
+{
+	uint8_t data_len;
+	uint16_t crc_received;
+	uint16_t crc_calculated;
+	uint16_t frame_length;
+	uint8_t valid = 0U;
+
+	if ((frame == NULL) || (s_protocol_rx_ready == 0U))
+	{
+		return 0U;
+	}
+
+	data_len = s_protocol_rx_buffer[10];
+	frame_length = LORA_PROTOCOL_HEADER_SIZE + data_len;
+	if ((data_len <= LORA_PROTOCOL_MAX_PAYLOAD) &&
+		(s_protocol_rx_expected == (frame_length + LORA_PROTOCOL_CRC_SIZE)) &&
+		(s_protocol_rx_buffer[2] == LORA_PROTOCOL_VERSION))
+	{
+		crc_received = (uint16_t)s_protocol_rx_buffer[frame_length] |
+			((uint16_t)s_protocol_rx_buffer[frame_length + 1U] << 8U);
+		crc_calculated = LoraProtocolCrc16(s_protocol_rx_buffer, frame_length);
+		if (crc_received == crc_calculated)
+		{
+			frame->type = s_protocol_rx_buffer[3];
+			frame->src_role = s_protocol_rx_buffer[4];
+			frame->src_group = s_protocol_rx_buffer[5];
+			frame->dst_role = s_protocol_rx_buffer[6];
+			frame->dst_group = s_protocol_rx_buffer[7];
+			frame->flow_id = (uint16_t)s_protocol_rx_buffer[8] |
+				((uint16_t)s_protocol_rx_buffer[9] << 8U);
+			frame->data_len = data_len;
+			if (data_len > 0U)
+			{
+				memcpy(frame->data, &s_protocol_rx_buffer[LORA_PROTOCOL_HEADER_SIZE], data_len);
+			}
+			valid = 1U;
+		}
+	}
+
+	LoraProtocolResetReceiver();
+	return valid;
+}
+
+static void LoraControlStoreTemperature(const uint8_t data[LORA_PROTOCOL_TEMPERATURE_BYTES])
+{
+	uint8_t index;
+
+	for (index = 0U; index < LORA_PROTOCOL_TEMPERATURE_COUNT; index++)
+	{
+		s_control_temperature[index] = (int16_t)((uint16_t)data[index * 2U] |
+			((uint16_t)data[index * 2U + 1U] << 8U));
+	}
+
+	/* 兼容现有显示任务，仅更新第 1 个通道 6 个温度。 */
+	LoRaType.DS18B20_PORT = 0;
+	LoRaType.DS18B20_NUM = LORA_MAX_SENSOR_COUNT;
+	for (index = 0U; index < LORA_MAX_SENSOR_COUNT; index++)
+	{
+		LoRaType.DS18B20_Data[index] = s_control_temperature[index];
+	}
+}
+
+static uint16_t LoraControlJsonAppend(uint16_t offset, const char *format, ...)
+{
+	va_list args;
+	size_t remaining;
+	int written;
+
+	if ((format == NULL) || (offset >= LORA_CONTROL_UART1_JSON_SIZE))
+	{
+		return LORA_CONTROL_UART1_JSON_SIZE;
+	}
+
+	remaining = LORA_CONTROL_UART1_JSON_SIZE - offset;
+	va_start(args, format);
+	written = vsnprintf(&s_control_uart1_json[offset], remaining, format, args);
+	va_end(args);
+
+	if (written < 0)
+	{
+		return LORA_CONTROL_UART1_JSON_SIZE;
+	}
+	if ((size_t)written >= remaining)
+	{
+		return LORA_CONTROL_UART1_JSON_SIZE;
+	}
+
+	return (uint16_t)(offset + (uint16_t)written);
+}
+
+static uint16_t LoraControlAppendTemperature(uint16_t offset, int16_t temperature)
+{
+	int32_t magnitude;
+
+	if (temperature == LORA_PROTOCOL_TEMPERATURE_INVALID)
+	{
+		return LoraControlJsonAppend(offset, "null");
+	}
+
+	magnitude = (int32_t)temperature;
+	if (magnitude < 0)
+	{
+		magnitude = -magnitude;
+		return LoraControlJsonAppend(offset, "-%ld.%ld",
+			(long)(magnitude / 10L), (long)(magnitude % 10L));
+	}
+
+	return LoraControlJsonAppend(offset, "%ld.%ld",
+		(long)(magnitude / 10L), (long)(magnitude % 10L));
+}
+
+static uint16_t LoraControlBuildUart1Json(const LoraProtocolFrame *frame)
+{
+	uint16_t offset = 0U;
+	uint8_t channel;
+	uint8_t probe;
+	uint8_t temperature_index;
+
+	if (frame == NULL)
+	{
+		return 0U;
+	}
+
+	s_control_uart1_json[0] = '\0';
+	for (channel = 0U; channel < 6U; channel++)
+	{
+		/* Mx 与 Sx 一一配对，因此 slave 使用与 master 相同的组号。 */
+		offset = LoraControlJsonAppend(offset,
+			"{\"ver\":1,\"type\":\"TEMP_36\","
+			"\"master\":%u,\"slave\":%u,\"flow\":%u,"
+			"\"channel\":%u,\"unit\":\"C\",\"values\":[",
+			(unsigned int)frame->src_group,
+			(unsigned int)frame->src_group,
+			(unsigned int)frame->flow_id,
+			(unsigned int)(channel + 1U));
+
+		for (probe = 0U; probe < 6U; probe++)
+		{
+			temperature_index = (uint8_t)(channel * 6U + probe);
+			offset = LoraControlAppendTemperature(offset,
+				s_control_temperature[temperature_index]);
+			if (probe < 5U)
+			{
+				offset = LoraControlJsonAppend(offset, ",");
+			}
+		}
+		offset = LoraControlJsonAppend(offset, "]}\r\n");
+	}
+
+	if (offset >= LORA_CONTROL_UART1_JSON_SIZE)
+	{
+		return 0U;
+	}
+	return offset;
+}
 
 
 /*****************************************************
@@ -33,6 +303,7 @@ void LORA_Clear(void)
 	{
 		__enable_irq();
 	}
+	LoraProtocolResetReceiver();
 }
 
 
@@ -128,9 +399,7 @@ _Bool LORA_SendCmd(char *cmd, char *res)
 *****************************************************/
 void LORA_SendData(unsigned char *data, unsigned short len)
 {
-	LORA_Clear();								//清空接收缓存
-  
-  Usart_SendString(huart2, data, len);		//发送设备连接请求数据
+	Usart_SendString(huart2, data, len);		//发送设备连接请求数据
 }
 
 
@@ -233,6 +502,37 @@ void LoraP2PTX(void)
 *****************************************************/
 void LoraP2PRX(void)
 {
+	LoraProtocolFrame frame;
+
+	if (LoraProtocolTakeFrame(&frame) != 0U)
+	{
+		if ((frame.type == LORA_TYPE_TEMP_36) &&
+			(frame.src_role == LORA_ROLE_MASTER) &&
+			(frame.src_group == LORA_MASTER_GROUP) &&
+			(frame.dst_role == LORA_ROLE_CONTROL) &&
+			(frame.dst_group == LORA_CONTROL_GROUP) &&
+			(frame.data_len == LORA_PROTOCOL_TEMPERATURE_BYTES))
+		{
+			uint16_t json_length;
+
+			LoraControlStoreTemperature(frame.data);
+			LoraControlTemperatureRxCount++;
+			json_length = LoraControlBuildUart1Json(&frame);
+			/* USART1/PA9 输出 ASCII NDJSON，每个采集通道独占一行。 */
+			if ((json_length > 0U) &&
+				(HAL_UART_Transmit(&huart1, (uint8_t *)s_control_uart1_json,
+				json_length, 200U) == HAL_OK))
+			{
+				LoraControlUart1TxCount++;
+			}
+			else
+			{
+				LoraControlUart1TxErrorCount++;
+			}
+		}
+	}
+
+#if 0 /* 旧文本报文和自动通风控制已停用，保留仅供历史对照。 */
   int Tdata[17] = {0};
   int parse_count;
   
@@ -305,6 +605,7 @@ void LoraP2PRX(void)
       LORA_Clear();       /* 丢弃非温度帧，释放接收缓冲区 */
     }
   }
+#endif
 }
 
 
