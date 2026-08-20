@@ -336,7 +336,7 @@
               <MiscControls></MiscControls>
               <Define>USE_HAL_DRIVER,STM32F103xB</Define>
               <Undefine></Undefine>
-              <IncludePath>../Core/Inc;../Drivers/STM32F1xx_HAL_Driver/Inc;../Drivers/STM32F1xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F1xx/Include;../Drivers/CMSIS/Include;../Bsp</IncludePath>
+              <IncludePath>../Core/Inc;../Drivers/STM32F1xx_HAL_Driver/Inc;../Drivers/STM32F1xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F1xx/Include;../Drivers/CMSIS/Include;../Bsp;../App</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -759,6 +759,11 @@
               <FileName>bme280.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\Bsp\bme280.c</FilePath>
+            </File>
+            <File>
+              <FileName>slave_protocol_runtime.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\slave_protocol_runtime.c</FilePath>
             </File>
           </Files>
         </Group>

@@ -4,6 +4,7 @@
 #include "string.h"
 #include "interrupt.h"
 #include "dip_switch.h"
+#include "slave_protocol_runtime.h"
 
 
 volatile uint16_t LORA_cntPre = 0;
@@ -158,7 +159,10 @@ void LORA_Init(void)
     HAL_Delay(50);	
   
   while(LORA_SendCmd("AT+UARTFT=10\r\n", "OK"))        // �����ֽڼ����10��ms�� �����ظ��ж���"OK"
-    HAL_Delay(50);	
+    HAL_Delay(50); 
+
+  while(LORA_SendCmd("AT+MTU=128\r\n", "OK"))          // 36点温度帧85字节，统一使用128字节包长
+    HAL_Delay(50);
   
   while(LORA_SendCmd("AT+UART=115200,8,1,NONE,NFC\r\n", "OK"))        // ���ڲ������ã�����-NFC �����ظ��ж���"OK"
     HAL_Delay(50);	
@@ -167,6 +171,9 @@ void LORA_Init(void)
     HAL_Delay(50);	
   
 #endif
+
+  /* 配置阶段仍用旧缓冲等待 AT 响应；从这里起切换到二进制协议接收环。 */
+  SlaveRuntime_Init(DIP_Switch_Read());
 }
 
 /*****************************************************
@@ -178,8 +185,7 @@ void LORA_Init(void)
 *****************************************************/
 void LoraP2PTrans(void)
 {
-  // �������ݲ���
-//	LORA_SendData((unsigned char *)"SlaveTestData:123",strlen((const char *)"SlaveTestData:123"));
+  SlaveRuntime_Process(HAL_GetTick());
 }
 
 

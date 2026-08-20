@@ -21,6 +21,7 @@
 #include "usart.h"
 
 /* USER CODE BEGIN 0 */
+#include "lora_transport.h"
 
 /* USER CODE END 0 */
 
@@ -291,8 +292,11 @@ void Usart_SendString(UART_HandleTypeDef USARTx, unsigned char *str, unsigned sh
 
 int fputc(int ch, FILE *f)    // 串口 printf 重定向
 {
-	/* 发送一个字节数据到串口DEBUG_USART */
-	HAL_UART_Transmit(&huart2, (uint8_t *)&ch, 1, 1000);
+	/* 二进制应用模式下禁止 printf 污染 LoRa 业务帧。 */
+	if (LoraTransport_IsApplicationMode() == 0U)
+	{
+		HAL_UART_Transmit(&huart2, (uint8_t *)&ch, 1, 1000);
+	}
 	
 	return (ch);
 }
@@ -330,7 +334,14 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if(huart->Instance == USART2)
   {
-    UART_StoreRxByte(Rx2Buffer, &rx2_pointer, &rx2_frame_ready, &rx2_overflow, rx2_data);
+    if (LoraTransport_IsApplicationMode() != 0U)
+    {
+      (void)LoraTransport_PushRxFromIsr(rx2_data);
+    }
+    else
+    {
+      UART_StoreRxByte(Rx2Buffer, &rx2_pointer, &rx2_frame_ready, &rx2_overflow, rx2_data);
+    }
     HAL_UART_Receive_IT(&huart2,&rx2_data,1);
   }
   if(huart->Instance == USART1)
@@ -340,20 +351,19 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   }
   if(huart->Instance == USART3)
   {
-    if (ModbusType.RxRcFinishFlag == 0U)
+    VfdModbus_OnRxByteFromIsr(uart3_rx_data, HAL_GetTick());
+    if (HAL_UART_Receive_IT(&huart3, &uart3_rx_data, 1U) != HAL_OK)
     {
-      if (ModbusType.RxPointer < sizeof(ModbusType.RxBuf))
-      {
-        ModbusType.RxBuf[ModbusType.RxPointer++] = uart3_rx_data;
-      }
-      else
-      {
-        ModbusType.RxOverflow = 1U;
-      }
-      ModbusType.RxWaitTime = 0U;
-      ModbusType.RxTimRun = 1U;
+      VfdModbus_OnUartErrorFromIsr(huart3.ErrorCode);
     }
-    HAL_UART_Receive_IT(&huart3, &uart3_rx_data, 1U);
+  }
+}
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART3)
+  {
+    VfdModbus_OnTxCompleteFromIsr(HAL_GetTick());
   }
 }
 
@@ -366,12 +376,19 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
   }
   else if (huart->Instance == USART2)
   {
-    rx2_overflow = 1U;
+    if (LoraTransport_IsApplicationMode() != 0U)
+    {
+      LoraTransport_ReportRxErrorFromIsr();
+    }
+    else
+    {
+      rx2_overflow = 1U;
+    }
     HAL_UART_Receive_IT(&huart2, &rx2_data, 1U);
   }
   else if (huart->Instance == USART3)
   {
-    ModbusType.RxOverflow = 1U;
+    VfdModbus_OnUartErrorFromIsr(huart->ErrorCode);
     HAL_UART_Receive_IT(&huart3, &uart3_rx_data, 1U);
   }
 }

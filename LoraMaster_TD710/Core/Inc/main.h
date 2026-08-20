@@ -37,18 +37,6 @@ extern "C" {
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
 
-/**
-  * @brief  通风温度 变量结构体定义
-  */
-typedef struct
-{
-    volatile uint16_t vent_temp;                     // 通风要求温度数，通常内环流控温温度要求：大于26℃开启，低于22℃后关闭
-
-    volatile uint16_t vent_temp_outmax_num;          // 超出通风要求温度数，本例程暂时用：3——超过三个温度温度点则开启通风
-    
-    volatile uint8_t vent_open_flag;                // 通风开启标志位
-}SysVariTypeDef;
-
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/
@@ -59,7 +47,6 @@ typedef struct
 /* Exported macro ------------------------------------------------------------*/
 /* USER CODE BEGIN EM */
 extern uint8_t uart3_rx_data;  /* 串口 3 接收数据变量 */
-extern SysVariTypeDef SysVariType;
 
 /* USER CODE END EM */
 

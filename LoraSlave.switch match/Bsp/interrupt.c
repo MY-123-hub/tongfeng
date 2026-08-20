@@ -4,6 +4,7 @@
 #include "stdio.h"
 #include "bsp_ds18b20.h"
 #include "bsp_led.h"
+#include "slave_protocol_runtime.h"
 
 volatile uint16_t time_100ms = 0;
 
@@ -18,10 +19,14 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 volatile uint8_t Rx2Buffer[100], rx2_pointer, rx2_data;
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-  if (rx2_pointer < sizeof(Rx2Buffer)) {
-    Rx2Buffer[rx2_pointer++] = rx2_data;
+  if (huart->Instance == USART2) {
+    if (SlaveRuntime_IsApplicationMode() != 0U) {
+      SlaveRuntime_PushRxByteFromIsr(rx2_data);
+    } else if (rx2_pointer < sizeof(Rx2Buffer)) {
+      Rx2Buffer[rx2_pointer++] = rx2_data;
+    }
+    (void)HAL_UART_Receive_IT(&huart2, &rx2_data, 1);
   }
-  HAL_UART_Receive_IT(&huart2, &rx2_data, 1);
 }
 
 SensorType Sensor_Detect(GPIO_TypeDef *GPIOx, uint16_t PINx)

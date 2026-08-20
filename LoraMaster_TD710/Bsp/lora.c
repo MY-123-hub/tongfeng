@@ -2,14 +2,28 @@
 
 
 #include "dip_swich.h"
+#include "lora_stream_parser.h"
+#include "lora_transport.h"
+#include "master_queues.h"
+#include "master_identity.h"
+#include "master_ingress.h"
 
-LoRaTypeDef LoRaType = {0};
+LoRaDiagnostics LoRaDiag = {0};
 uint16_t LORA_cntPre = 0;
 static char *LORA_lastCommand;
 static uint8_t LORA_commandFailures;
+static LoRaStreamParser g_lora_stream_parser;
+static LoRaMessage g_lora_received_message;
+static uint32_t g_lora_last_data_loss_count;
+static uint32_t g_lora_last_rx_tick;
+static uint8_t g_lora_parser_initialized;
+static uint8_t g_lora_tx_frame[LORA_PROTOCOL_MAX_FRAME_SIZE];
+static uint16_t g_lora_tx_frame_length;
+static uint8_t g_lora_tx_pending;
 
-#define LORA_MAX_SENSOR_COUNT 6U
 #define LORA_COMMAND_RETRY_COUNT 3U
+#define LORA_RX_PROCESS_BUDGET 128U
+#define LORA_FRAME_TIMEOUT_MS 200U
 
 
 /*****************************************************
@@ -111,6 +125,8 @@ _Bool LORA_SendCmd(char *cmd, char *res)
 	{
 		/* 不让缺失的 LoRa 模块永久阻塞主机启动。 */
 		LORA_commandFailures = 0U;
+		LoRaDiag.config_failure_count++;
+		LoRaDiag.configuration_degraded = 1U;
 		return 0;
 	}
 
@@ -143,6 +159,7 @@ void LORA_SendData(unsigned char *data, unsigned short len)
 *****************************************************/
 void LORA_Init(void)
 {
+  LoraTransport_Init();
   lora_reset_off();
   HAL_Delay(10);
   lora_reset_on();
@@ -196,7 +213,7 @@ void LORA_Init(void)
   
   {
     char cmd_addr[16];
-    uint8_t dip_addr = DIP_Switch_Read();
+    uint8_t dip_addr = MasterIdentity_GetRawGroup();
 
     sprintf(cmd_addr, "AT+ADDR=%u\r\n", (unsigned int)dip_addr);
     while(LORA_SendCmd(cmd_addr, "OK"))
@@ -208,6 +225,9 @@ void LORA_Init(void)
   
   while(LORA_SendCmd("AT+UARTFT=10\r\n", "OK"))        // 串口字节间隔：10（ms） ——回复判定："OK"
     HAL_Delay(50);	
+
+  while(LORA_SendCmd("AT+MTU=128\r\n", "OK"))        // LoRa 单包长度统一为 128 字节
+    HAL_Delay(50);
   
   while(LORA_SendCmd("AT+UART=115200,8,1,NONE,NFC\r\n", "OK"))        // 串口参数设置，流控-NFC ——回复判定："OK"
     HAL_Delay(50);	
@@ -216,6 +236,14 @@ void LORA_Init(void)
     HAL_Delay(50);	
   
 #endif
+
+  LoRaStreamParser_Init(&g_lora_stream_parser);
+  g_lora_last_data_loss_count = 0U;
+  g_lora_last_rx_tick = HAL_GetTick();
+  g_lora_parser_initialized = 1U;
+  g_lora_tx_pending = 0U;
+  g_lora_tx_frame_length = 0U;
+  LoraTransport_EnableApplicationMode();
 }
 
 /*****************************************************
@@ -227,6 +255,39 @@ void LORA_Init(void)
 *****************************************************/
 void LoraP2PTX(void)
 {
+  LoRaMessage message;
+  LoRaProtocolStatus status;
+
+  if (g_lora_tx_pending == 0U)
+  {
+    if (MasterQueues_ReceiveLoRa(&message, 0U) != pdPASS)
+    {
+      return;
+    }
+
+    status = LoRaProtocol_Encode(&message,
+                                 g_lora_tx_frame,
+                                 (uint16_t)sizeof(g_lora_tx_frame),
+                                 &g_lora_tx_frame_length);
+    if (status != LORA_PROTOCOL_OK)
+    {
+      LoRaDiag.tx_encode_error_count++;
+      return;
+    }
+    g_lora_tx_pending = 1U;
+  }
+
+  if (HAL_UART_Transmit(&huart2,
+                        g_lora_tx_frame,
+                        g_lora_tx_frame_length,
+                        50U) != HAL_OK)
+  {
+    LoRaDiag.tx_uart_error_count++;
+    /* 保留当前完整帧，下个任务周期重试，不能静默丢失ACK/RESULT。 */
+    return;
+  }
+  g_lora_tx_pending = 0U;
+  LoRaDiag.tx_frame_count++;
 }
 
 /*****************************************************
@@ -238,83 +299,64 @@ void LoraP2PTX(void)
 *****************************************************/
 void LoraP2PRX(void)
 {
-  int Tdata[17] = {0};
-  int parse_count;
-  
-  if(LORA_WaitRecive() == REV_OK)							//如果收到数据
+  uint8_t rx_byte;
+  uint16_t processed = 0U;
+  uint32_t data_loss_count;
+
+  if (g_lora_parser_initialized == 0U)
   {
-    if(strstr((const char *)Rx2Buffer, "TM") != NULL)		//如果检索到关键词:TM——温度数据关键词
-    {
-      
-      /* 处理接受的 Lora 温度数据——作数据整形处理 */ 
-      // 数据格式对比： PORT:00,NUM:04,TM:26.8/27.0/27.0/26.8/0.0/0.0,DHT11_H:60.0,DHT11_T:27.7,Pressure:31
-      parse_count = sscanf((const char *)Rx2Buffer,"PORT:%02d,NUM:%02d,TM:%d.%d/%d.%d/%d.%d/%d.%d/%d.%d/%d.%d,DHT11_H:%d.%d,DHT11_T:%d.%d,Pressure:%d",&LoRaType.DS18B20_PORT,&LoRaType.DS18B20_NUM,
-              &Tdata[0],&Tdata[1],&Tdata[2],&Tdata[3],&Tdata[4],&Tdata[5],&Tdata[6],&Tdata[7],&Tdata[8],&Tdata[9],&Tdata[10],&Tdata[11],
-              &Tdata[12],&Tdata[13],&Tdata[14],&Tdata[15],&Tdata[16]);
-      if ((parse_count != 19) || (LoRaType.DS18B20_NUM <= 0) ||
-          (LoRaType.DS18B20_NUM > (int)LORA_MAX_SENSOR_COUNT))
-      {
-        LORA_Clear();
-        return;
-      }
-      for(uint8_t i=0;i<6;i++){LoRaType.DS18B20_Data[i]=Tdata[i*2]*10+Tdata[i*2+1];}
-      LoRaType.DHT11_Humi=Tdata[12]*10+Tdata[13];
-      LoRaType.DHT11_Temp=Tdata[14]*10+Tdata[15];
-      LoRaType.WindPressure=Tdata[16]*10;
-
-#if 0     //!!!调试后关闭
-      /* 打印查看——调试 */ 
-      HAL_UART_Transmit(&huart2,(const unsigned char *)Rx2Buffer,strlen((const char *)Rx2Buffer),50);      //打印原数据
-      printf("端口:%02d,数量:%02d,温度:%d %d %d %d %d %d DHT11_Humi:%d DHT11_Temp:%d \r\n \r\n",LoRaType.DS18B20_PORT,LoRaType.DS18B20_NUM,
-        LoRaType.DS18B20_Data[0],LoRaType.DS18B20_Data[1],LoRaType.DS18B20_Data[2],LoRaType.DS18B20_Data[3],
-        LoRaType.DS18B20_Data[4],LoRaType.DS18B20_Data[5],LoRaType.DHT11_Humi,LoRaType.DHT11_Temp);  
-        printf("\r\n设定温度：%d \r\n",SysVariType.vent_temp);      
-#endif
-      
-      /********************* 通风条件判断 ***********************/ 
-      if(SysVariType.vent_open_flag==0)    /* 通风关闭状态-开启条件判断 */
-      {
-        SysVariType.vent_temp_outmax_num = 0;      /* 每个有效报文独立统计异常温度点 */
-        /* 逐个判断温度点是否异常 */
-        for(uint8_t i = 0U; i < (uint8_t)LoRaType.DS18B20_NUM; i++)
-        {
-          if(LoRaType.DS18B20_Data[i] > SysVariType.vent_temp) SysVariType.vent_temp_outmax_num++;    /* 超过三个温度点大于设定温度——开启通风 */ 
-          if(SysVariType.vent_temp_outmax_num>=3)
-          {
-            ModbusTxVfdCmd(modbuswrite_RunFwd, VFD_TARGET_FREQ_X100);         /* 变频器 正转运行命令 */
-            break;  /* ModbusTx 已将该事务标为在途，禁止同一帧重复发命令 */
-          }
-        }
-      }
-      else               /* 通风开启状态-关闭条件判断 */
-      {
-        uint8_t all_below_threshold = 1U;
-        for(uint8_t i = 0U; i < (uint8_t)LoRaType.DS18B20_NUM; i++)
-        {
-          if(LoRaType.DS18B20_Data[i] > SysVariType.vent_temp)
-          {
-            all_below_threshold = 0U;
-            break;
-          }
-        }
-        if (all_below_threshold != 0U)
-        {
-          ModbusTxVfdCmd(modbuswrite_StopDec, VFD_TARGET_FREQ_X100);          /* 变频器 减速停机命令 */
-        }
-      }
-
-      LORA_Clear();       /* 清空 Lora 接收数据缓存 */
-    }
-    else
-    {
-      LORA_Clear();       /* 丢弃非温度帧，释放接收缓冲区 */
-    }
+    LoRaStreamParser_Init(&g_lora_stream_parser);
+    g_lora_parser_initialized = 1U;
   }
+
+  data_loss_count = LoraTransport_GetDataLossCount();
+  if (data_loss_count != g_lora_last_data_loss_count)
+  {
+    LoRaStreamParser_AbortPartialFrame(&g_lora_stream_parser);
+    g_lora_last_data_loss_count = data_loss_count;
+  }
+
+  while ((processed < LORA_RX_PROCESS_BUDGET) &&
+         (LoraTransport_PopRx(&rx_byte) != 0U))
+  {
+    LoRaStreamResult result = LoRaStreamParser_PushByte(&g_lora_stream_parser,
+                                                        rx_byte,
+                                                        &g_lora_received_message);
+    g_lora_last_rx_tick = HAL_GetTick();
+    if (result == LORA_STREAM_FRAME_READY)
+    {
+      MasterEvent event;
+      MasterIngressRoute route;
+
+      LoRaDiag.last_message_type = g_lora_received_message.type;
+      LoRaDiag.last_flow_id = g_lora_received_message.flow_id;
+      route = MasterIngress_Route(&g_lora_received_message,
+                                  MasterIdentity_GetGroup());
+      if (route == MASTER_INGRESS_DROP)
+      {
+        LoRaDiag.address_filter_drop_count++;
+        processed++;
+        continue;
+      }
+      memset(&event, 0, sizeof(event));
+      event.type = MASTER_EVENT_LORA_MESSAGE;
+      event.data.lora_message = g_lora_received_message;
+      if (MasterQueues_SendEvent(&event, 0U) != pdPASS)
+      {
+        LoRaDiag.event_queue_drop_count++;
+      }
+    }
+    processed++;
+  }
+
+  if ((g_lora_stream_parser.length != 0U) &&
+      ((uint32_t)(HAL_GetTick() - g_lora_last_rx_tick) >= LORA_FRAME_TIMEOUT_MS))
+  {
+    LoRaStreamParser_AbortPartialFrame(&g_lora_stream_parser);
+  }
+
+  LoRaDiag.accepted_frame_count = g_lora_stream_parser.accepted_frame_count;
+  LoRaDiag.rejected_frame_count = g_lora_stream_parser.rejected_frame_count;
+  LoRaDiag.aborted_frame_count = g_lora_stream_parser.aborted_frame_count;
+  LoRaDiag.data_loss_count = data_loss_count;
 }
-
-
-
-
-
-
-

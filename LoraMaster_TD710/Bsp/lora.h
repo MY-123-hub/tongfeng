@@ -6,19 +6,24 @@
 #include "string.h"
 #include "gpio.h"
 #include "usart.h"
-#include "modbus.h"
 
 
-/**
-  * @brief  DGUS 变量结构体定义
-  */
 typedef struct
 {
-    volatile int DS18B20_PORT,DS18B20_NUM;           // 变量：记录 DS18B20 的端口号的 数量 
-    volatile int DS18B20_Data[8];                  // 变量：记录 DS18B20 一个通道的温度数据 
-    volatile int DHT11_Humi,DHT11_Temp;            // 变量：记录一次 DHT11 的温湿度数据 
-    volatile int WindPressure;            // 变量：记录风压 
-}LoRaTypeDef;
+    volatile uint32_t accepted_frame_count;   /* 已通过完整协议校验的帧数 */
+    volatile uint32_t rejected_frame_count;   /* 长度、CRC 或字段校验失败的帧数 */
+    volatile uint32_t data_loss_count;        /* 串口错误或环形缓冲区满次数 */
+    volatile uint32_t aborted_frame_count;    /* 数据丢失后放弃的半帧数 */
+    volatile uint32_t event_queue_drop_count; /* 合法帧因业务事件队列满而丢弃的次数 */
+    volatile uint32_t tx_frame_count;         /* 已从队列编码并成功交给串口的帧数 */
+    volatile uint32_t tx_encode_error_count;  /* 发送消息未通过协议编码检查的次数 */
+    volatile uint32_t tx_uart_error_count;    /* 串口发送失败次数 */
+    volatile uint32_t address_filter_drop_count; /* 入业务队列前丢弃的非本机帧 */
+    volatile uint32_t config_failure_count;   /* AT命令用尽有限重试的次数 */
+    volatile uint8_t configuration_degraded;  /* 1=上电参数未全部获得OK确认 */
+    volatile uint8_t last_message_type;       /* 最近合法报文类型 */
+    volatile uint16_t last_flow_id;           /* 最近合法报文流水号 */
+} LoRaDiagnostics;
 
 
 
@@ -31,7 +36,7 @@ typedef struct
 
 
 /* 变量声明 */
-extern LoRaTypeDef LoRaType;
+extern LoRaDiagnostics LoRaDiag;
 
 
 

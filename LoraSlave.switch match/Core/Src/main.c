@@ -25,6 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "slave_protocol_runtime.h"
 #include "core_delay.h"
 #include "interrupt.h"
 #include "bsp_led.h"
@@ -77,10 +78,9 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-typedef enum { PHASE_CONVERT, PHASE_WAIT, PHASE_READ } SamplePhase_t;
-
-static SamplePhase_t s_phase = PHASE_CONVERT;
-static uint8_t       s_wait  = 0;
+static uint8_t s_sample_active;
+static uint32_t s_sample_ready_tick;
+static uint16_t s_sample_flow_id;
 
 /* 判断 ROM 序列号是否全 0（幽灵/空槽） */
 static uint8_t is_ghost_id(uint8_t channel, uint8_t idx)
@@ -120,85 +120,36 @@ static void Sensor_Convert_All(void)
     }
 }
 
-/* READ 阶段：读所有传感器 → 组帧 → 发 LoRa → LED 指示 */
-static void Sensor_Read_Send_All(void)
+/* 读取36点。温度为0或不在传感器有效范围内，按项目约定写0（无效点）。 */
+static void Sensor_Read_AllTemperatures(int16_t temperatures[36])
 {
-    int32_t  bme_temp  = 0;
-    uint32_t bme_press = 0, bme_hum = 0;
-    if (bme_ok) {
-        BME280_ReadAll(&bme280, &bme_temp, &bme_press, &bme_hum);
-    }
-    float bme_t = bme_temp / 100.0f;    /* C */
-    float bme_h = bme_hum / 1024.0f;    /* %RH */
-
     uint8_t channel, sen_idx;
     for (channel = 0; channel < 6; channel++) {
         GPIO_TypeDef *port = DS18B20_ChannelPort[channel];
         uint16_t pin   = DS18B20_ChannelPin[channel];
-        float tvals[6], hvals[6];
+        uint8_t point = (uint8_t)(channel * 6U);
         uint8_t real_count = 0;
 
+        for (sen_idx = 0U; sen_idx < 6U; sen_idx++) {
+            temperatures[point + sen_idx] = 0;
+        }
+
         for (sen_idx = 0; sen_idx < DS18B20_SensorNum[channel] && real_count < 6; sen_idx++) {
+            float temperature;
+            float humidity;
             if (is_ghost_id(channel, sen_idx)) continue;
 
-            GXHT3W_Read_TempHum(port, pin, channel, sen_idx, &tvals[real_count], &hvals[real_count]);   /* 全部按 GXHT3W 处理 */
+            GXHT3W_Read_TempHum(port, pin, channel, sen_idx, &temperature, &humidity);
 #if DEBUG_LOG
             printf("[D] ch%d[%d] fam=0x%02X T=%.2f H=%.2f\r\n",
-                   channel, sen_idx, DS18B20_ID[channel][sen_idx][0],
-                   tvals[real_count], hvals[real_count]);
+                    channel, sen_idx, DS18B20_ID[channel][sen_idx][0],
+                    temperature, humidity);
 #endif
-            if (tvals[real_count] > 80 || tvals[real_count] < -20) tvals[real_count] = 0;
-            if (hvals[real_count] > 100 || hvals[real_count] < 0) hvals[real_count] = 0;
+            if ((temperature >= -20.0f) && (temperature <= 80.0f) && (temperature != 0.0f)) {
+                temperatures[point + real_count] = (int16_t)(temperature * 10.0f +
+                    ((temperature >= 0.0f) ? 0.5f : -0.5f));
+            }
             real_count++;
-        }
-
-        for (sen_idx = real_count; sen_idx < 6; sen_idx++) {
-            tvals[sen_idx] = 0; hvals[sen_idx] = 0;
-        }
-
-        if (real_count == 0) {
-            tvals[0] = 0; tvals[1] = 0; tvals[2] = 0;
-            tvals[3] = 0; tvals[4] = 0; tvals[5] = 0;
-            hvals[0] = 0; hvals[1] = 0; hvals[2] = 0;
-            hvals[3] = 0; hvals[4] = 0; hvals[5] = 0;
-        }
-
-        memset(lora_sp, 0, sizeof(lora_sp));
-        uint16_t buf_len = sprintf(lora_sp, "PORT:%02d,NUM:%02d,TM:", channel, real_count);
-        for (sen_idx = 0; sen_idx < 6; sen_idx++) {
-            buf_len += sprintf(lora_sp + buf_len, "%.1f", tvals[sen_idx]);
-            if (sen_idx < 5) buf_len += sprintf(lora_sp + buf_len, "/");
-        }
-        buf_len += sprintf(lora_sp + buf_len, ",HM:");
-        for (sen_idx = 0; sen_idx < 6; sen_idx++) {
-            buf_len += sprintf(lora_sp + buf_len, "%.1f", hvals[sen_idx]);
-            if (sen_idx < 5) buf_len += sprintf(lora_sp + buf_len, "/");
-        }
-        buf_len += sprintf(lora_sp + buf_len, ",BME_H:%.1f,BME_T:%.1f,Pressure:%lu",
-                           bme_h, bme_t, (unsigned long)(bme_press / 100));
-        LORA_SendData((unsigned char *)lora_sp, strlen(lora_sp));
-    }
-
-    /* LED2：每 10 个采样周期闪烁一次传感器总数 */
-    {
-        static uint8_t cnt_cycle = 0;
-        cnt_cycle++;
-        if (cnt_cycle >= 10) {
-            cnt_cycle = 0;
-            uint8_t total = 0;
-            for (uint8_t ch = 0; ch < 6; ch++) {
-                for (uint8_t n = 0; n < DS18B20_SensorNum[ch]; n++) {
-                    if (!is_ghost_id(ch, n)) total++;
-                }
-            }
-            if (total > 0) {
-                led2_off; HAL_Delay(2000);
-                for (uint8_t b = 0; b < total; b++) {
-                    led2_on;  HAL_Delay(800);
-                    led2_off; HAL_Delay(400);
-                }
-                led2_on;
-            }
         }
     }
 }
@@ -289,30 +240,31 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    /* 三阶段采样状态机：CONVERT → WAIT(750ms) → READ，用 time_100ms(100ms 节拍) 推进 */
-    if(time_100ms >= 10)
+    uint16_t requested_flow;
+    uint32_t now = HAL_GetTick();
+    LoraP2PTrans();
+
+    if ((s_sample_active == 0U) &&
+        (SlaveRuntime_TakeSampleRequest(&requested_flow) != 0U))
     {
-      time_100ms = 0;
+      Sensor_Convert_All();
+      s_sample_flow_id = requested_flow;
+      s_sample_ready_tick = now + 800U;
+      s_sample_active = 1U;
+    }
 
-      if(sensor_type == SENSOR_TYPE_NONE) { led3_toggle; }
+    if ((s_sample_active != 0U) && ((uint32_t)(now - s_sample_ready_tick) < 0x80000000UL))
+    {
+      int16_t temperatures[36];
+      Sensor_Read_AllTemperatures(temperatures);
+      SlaveRuntime_CompleteSample(s_sample_flow_id, temperatures);
+      s_sample_active = 0U;
+    }
 
-      switch(s_phase)
-      {
-        case PHASE_CONVERT:
-          Sensor_Convert_All();
-          s_phase = PHASE_WAIT;
-          s_wait = 0;
-          break;
-
-        case PHASE_WAIT:
-          if(++s_wait >= 8) { s_phase = PHASE_READ; }   /* 8 × 100ms = 800ms ≥ 750ms 转换时间 */
-          break;
-
-        case PHASE_READ:
-          Sensor_Read_Send_All();
-          s_phase = PHASE_CONVERT;
-          break;
-      }
+    if ((sensor_type == SENSOR_TYPE_NONE) && (time_100ms >= 10U))
+    {
+      time_100ms = 0U;
+      led3_toggle;
     }
     /* USER CODE END 3 */
 }

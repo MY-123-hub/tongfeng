@@ -28,14 +28,13 @@
 #include "stdio.h"
 #include "string.h"
 #include "lora.h"
-#include "modbus.h"
 #include "DGUS.h"
 #include "dip_swich.h"
+#include "master_identity.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-SysVariTypeDef SysVariType;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -102,11 +101,6 @@ int main(void)
   MX_USART2_UART_Init();
   MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
-  SysVariType.vent_temp=16;     //!!!!!!!! 内控环流通风设定温度 —— 26 摄氏度 ，实验温度 29   !!!!!!!!!
-  SysVariType.vent_temp*=10;    //从机发送的数据为浮点数，接收端将数据×10处理，接受一位小数点的温度精度
-
-  HAL_TIM_Base_Start_IT(&htim4);          // 开启 1ms 基础定时器
-
   HAL_UART_Receive_IT(&huart3,&uart3_rx_data,1);    // 开启串口3接受中断——RS485
   HAL_UART_Receive_IT(&huart2,&rx2_data,1);   // uart2 接受中断开启——LoRa
   HAL_UART_Receive_IT(&huart1,&rx1_data,1);   // uart1 接收中断——串口屏
@@ -114,8 +108,8 @@ int main(void)
   led1_off();
   led2_off();
   DIP_Switch_Init();   // 拨码开关引脚初始化（输入上拉，ON=0/OFF=1）
+  MasterIdentity_Init(DIP_Switch_Read()); /* 组号只在启动时读取一次并冻结 */
   LORA_Init();      // LORA 参数初始化
-  ModbusInit();       // Modbus 启动初始化
   /* USER CODE END 2 */
 
   /* Call init function for freertos objects (in cmsis_os2.c) */
@@ -197,29 +191,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
-  if(htim->Instance==TIM4)
-  {
-    ModbusType.Tx_1s++;     //  1s 计时——连续发送，用于测试
-    ModbusType.Tx_500ms++;     //  1s 计时——连续发送，用于测试
-
-    if (ModbusType.TxProcFinishFlag != 0U)
-    {
-      ModbusType.TxWaitTime++;
-    }
-    
-    if(ModbusType.RxTimRun!=0)      // 正在接受数据
-    {
-        ModbusType.RxWaitTime++;
-        if(ModbusType.RxWaitTime>=8)
-        {
-            ModbusType.RxRcFinishFlag=1;    // 超过 8ms 没有接受到数据，代表已经接受完毕
-            ModbusType.RxTimRun=0;      
-            ModbusType.RxWaitTime=0;
-        }
-    }
-      
-  }
-
   /* USER CODE END Callback 1 */
 }
 

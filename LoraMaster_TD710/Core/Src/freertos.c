@@ -28,8 +28,10 @@
 #include "stdio.h"
 #include "string.h"
 #include "lora.h"
-#include "modbus.h"
+#include "modbus_async.h"
 #include "DGUS.h"
+#include "master_queues.h"
+#include "master_runtime.h"
 
 /* USER CODE END Includes */
 
@@ -50,6 +52,14 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
+static uint32_t defaultTaskStack[256];
+static osStaticThreadDef_t defaultTaskControl;
+static uint32_t loRaTaskStack[256];
+static osStaticThreadDef_t loRaTaskControl;
+static uint32_t dgusTaskStack[128];
+static osStaticThreadDef_t dgusTaskControl;
+static uint32_t modBusTaskStack[256];
+static osStaticThreadDef_t modBusTaskControl;
 
 /* USER CODE END Variables */
 osThreadId defaultTaskHandle;
@@ -108,25 +118,38 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE END RTOS_TIMERS */
 
   /* USER CODE BEGIN RTOS_QUEUES */
-  /* add queues, ... */
+  if (MasterQueues_Init() == 0U)
+  {
+    Error_Handler();
+  }
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
   /* definition and creation of defaultTask */
-  osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 128);
+  osThreadStaticDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 256,
+                    defaultTaskStack, &defaultTaskControl);
   defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
 
   /* definition and creation of LoRaTask */
-  osThreadDef(LoRaTask, StartLoRaTask, osPriorityIdle, 0, 128);
+  osThreadStaticDef(LoRaTask, StartLoRaTask, osPriorityAboveNormal, 0, 256,
+                    loRaTaskStack, &loRaTaskControl);
   LoRaTaskHandle = osThreadCreate(osThread(LoRaTask), NULL);
 
   /* definition and creation of DGUSTask */
-  osThreadDef(DGUSTask, StartDGUSTask, osPriorityIdle, 0, 128);
+  osThreadStaticDef(DGUSTask, StartDGUSTask, osPriorityLow, 0, 128,
+                    dgusTaskStack, &dgusTaskControl);
   DGUSTaskHandle = osThreadCreate(osThread(DGUSTask), NULL);
 
   /* definition and creation of ModBusTask */
-  osThreadDef(ModBusTask, StartModBusTask, osPriorityIdle, 0, 128);
+  osThreadStaticDef(ModBusTask, StartModBusTask, osPriorityAboveNormal, 0, 256,
+                    modBusTaskStack, &modBusTaskControl);
   ModBusTaskHandle = osThreadCreate(osThread(ModBusTask), NULL);
+
+  if ((defaultTaskHandle == NULL) || (LoRaTaskHandle == NULL) ||
+      (DGUSTaskHandle == NULL) || (ModBusTaskHandle == NULL))
+  {
+    Error_Handler();
+  }
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -144,10 +167,11 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void const * argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
+  MasterRuntime_Init();
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    MasterRuntime_ProcessOne(HAL_GetTick(), pdMS_TO_TICKS(10U));
   }
   /* USER CODE END StartDefaultTask */
 }
@@ -176,9 +200,7 @@ void StartLoRaTask(void const * argument)
   {
     /* lora 点对点通讯接受处理 —— 通风条件判断与执行 */
     LoraP2PRX();
-
-    /* DGUS 触摸数据应答 */
-    DGUS_TouchAck();
+    LoraP2PTX();
 
     /* ===== 测试模式（暂时注释）===== */
 #if 0
@@ -215,15 +237,25 @@ void StartLoRaTask(void const * argument)
 void StartDGUSTask(void const * argument)
 {
   /* USER CODE BEGIN StartDGUSTask */
+  static MasterUiSnapshot ui_snapshot;
+  uint32_t last_update_tick = HAL_GetTick() - 5000U;
   /* Infinite loop */
   for(;;)
   {
-    /* 更新 DGUS 的环境数据 */
-    DGUS_WriteSingleData(DGUS_GrainTemp,LoRaType.DS18B20_Data[0]);   //粮面温度   
-    DGUS_WriteSingleData(DGUS_EnvirHumi,LoRaType.DHT11_Humi);   //环境湿度   
-    DGUS_WriteSingleData(DGUS_EnvirTemp,LoRaType.DHT11_Temp);   //环境温度   
-    DGUS_WriteSingleData(DGUS_GrainSpeed,LoRaType.WindPressure);   //环境温度   
-    osDelay(5000);
+    /* DGUS 串口只由本任务处理，避免与 LoRa 任务交叉访问。 */
+    DGUS_TouchAck();
+    if ((uint32_t)(HAL_GetTick() - last_update_tick) >= 5000U)
+    {
+      last_update_tick = HAL_GetTick();
+      if (MasterQueues_PeekUi(&ui_snapshot) == pdPASS)
+      {
+        /* 旧串口屏只有一个粮温字段，暂时显示36点中的第1点。
+           0表示无效；环境温湿度和风压按当前需求不采集、不刷新。 */
+        DGUS_WriteSingleData(DGUS_GrainTemp,
+                             (int)ui_snapshot.temperatures[0]);
+      }
+    }
+    osDelay(20);
   }
   /* USER CODE END StartDGUSTask */
 }
@@ -239,17 +271,68 @@ void StartDGUSTask(void const * argument)
 void StartModBusTask(void const * argument)
 {
   /* USER CODE BEGIN StartModBusTask */
+  static VfdJob job;
+  static VfdResult result;
+  static MasterEvent event;
+  static uint8_t adapter_result_pending;
+
+  VfdModbus_Init();
   /* Infinite loop */
   for(;;)
   {
-    /* 更新LED1——通风状态标志 */
-//    if(SysVariType.vent_open_flag==1)led1_on();else led1_off();
-    
-    /* 处理 Modbus 接收数据 */
-    ModBusRxProc();
-    
-    /* 回包应在毫秒级处理，避免阻塞下一条变频器命令。 */
-    osDelay(10);
+    VfdModbus_Process(HAL_GetTick(), MasterRuntime_GetControlEpoch());
+
+    if (adapter_result_pending != 0U)
+    {
+      memset(&event, 0, sizeof(event));
+      event.type = MASTER_EVENT_VFD_RESULT;
+      event.data.vfd_result = result;
+      if (MasterQueues_SendEvent(&event, 0U) == pdPASS)
+      {
+        adapter_result_pending = 0U;
+      }
+    }
+    else if (VfdModbus_PeekResult(&result) != 0U)
+    {
+      memset(&event, 0, sizeof(event));
+      event.type = MASTER_EVENT_VFD_RESULT;
+      event.data.vfd_result = result;
+      if (MasterQueues_SendEvent(&event, 0U) == pdPASS)
+      {
+        VfdModbus_AcknowledgeResult();
+      }
+    }
+    else if ((VfdModbus_IsIdle() != 0U) &&
+             (MasterQueues_ReceiveVfdJob(&job, 0U) == pdPASS))
+    {
+      if (job.epoch != MasterRuntime_GetControlEpoch())
+      {
+        memset(&result, 0, sizeof(result));
+        result.flow_id = job.flow_id;
+        result.frequency_x100 = job.frequency_x100;
+        result.action = job.action;
+        result.epoch = job.epoch;
+        result.request_type = job.request_type;
+        result.origin = job.origin;
+        result.code = VFD_RESULT_CANCELED;
+        adapter_result_pending = 1U;
+      }
+      else if (VfdModbus_Start(&job, HAL_GetTick()) !=
+               VFD_MODBUS_START_ACCEPTED)
+      {
+        memset(&result, 0, sizeof(result));
+        result.flow_id = job.flow_id;
+        result.frequency_x100 = job.frequency_x100;
+        result.action = job.action;
+        result.epoch = job.epoch;
+        result.request_type = job.request_type;
+        result.origin = job.origin;
+        result.code = VFD_RESULT_TX_ERROR;
+        adapter_result_pending = 1U;
+      }
+    }
+
+    osDelay(1);
   }
   /* USER CODE END StartModBusTask */
 }
