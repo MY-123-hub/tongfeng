@@ -13,6 +13,7 @@
 *.build_log.htm
 *.map
 *.lst
+*.log
 
 # MDK-ARM generated (applies to both firmware directories)
 **/MDK-ARM/*/
@@ -29,3 +30,6 @@
 # OS junk
 Thumbs.db
 Desktop.ini
+
+# Local protocol renders, build logs and other disposable workspace artifacts
+/tmp/
