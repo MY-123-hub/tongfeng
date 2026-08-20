@@ -2,245 +2,12 @@
 
 
 LoRaTypeDef LoRaType = {0};
-volatile uint32_t LoraMasterPollCount;
-volatile uint32_t LoraMasterTemperatureRxCount;
-volatile uint32_t LoraMasterTemperatureForwardCount;
 uint16_t LORA_cntPre = 0;
 static char *LORA_lastCommand;
 static uint8_t LORA_commandFailures;
 
 #define LORA_MAX_SENSOR_COUNT 6U
 #define LORA_COMMAND_RETRY_COUNT 3U
-
-#define LORA_MASTER_GROUP 0x01U
-#define LORA_CONTROL_GROUP 0x00U
-#define LORA_MASTER_POLL_PERIOD_MS 1000U
-#define LORA_MASTER_REPORT_TIME_MS 220U
-
-static uint8_t s_protocol_rx_buffer[LORA_PROTOCOL_FRAME_MAX_SIZE];
-static volatile uint8_t s_protocol_rx_index;
-static volatile uint8_t s_protocol_rx_expected;
-static volatile uint8_t s_protocol_rx_ready;
-static uint16_t s_master_next_flow_id = 1U;
-static uint16_t s_master_waiting_flow_id;
-static uint16_t s_master_cycle_elapsed_ms = LORA_MASTER_POLL_PERIOD_MS;
-static int16_t s_master_temperature[LORA_PROTOCOL_TEMPERATURE_COUNT];
-static uint8_t s_master_report_data[LORA_PROTOCOL_TEMPERATURE_BYTES];
-static uint16_t s_master_report_flow_id;
-static uint8_t s_master_report_pending;
-
-static void LoraProtocolResetReceiver(void)
-{
-	uint32_t primask = __get_PRIMASK();
-
-	__disable_irq();
-	s_protocol_rx_index = 0U;
-	s_protocol_rx_expected = 0U;
-	s_protocol_rx_ready = 0U;
-	if (primask == 0U)
-	{
-		__enable_irq();
-	}
-}
-
-static uint16_t LoraProtocolCrc16(const uint8_t *data, uint16_t length)
-{
-	uint16_t crc = 0xFFFFU;
-	uint16_t index;
-	uint8_t bit;
-
-	for (index = 0U; index < length; index++)
-	{
-		crc ^= data[index];
-		for (bit = 0U; bit < 8U; bit++)
-		{
-			if ((crc & 0x0001U) != 0U)
-			{
-				crc = (uint16_t)((crc >> 1U) ^ 0xA001U);
-			}
-			else
-			{
-				crc >>= 1U;
-			}
-		}
-	}
-
-	return crc;
-}
-
-static void LoraProtocolSendFrame(uint8_t type, uint8_t src_role, uint8_t src_group,
-	uint8_t dst_role, uint8_t dst_group, uint16_t flow_id,
-	const uint8_t *data, uint8_t data_len)
-{
-	uint8_t frame[LORA_PROTOCOL_FRAME_MAX_SIZE];
-	uint16_t crc;
-	uint16_t total_length;
-
-	if (data_len > LORA_PROTOCOL_MAX_PAYLOAD)
-	{
-		return;
-	}
-
-	frame[0] = LORA_PROTOCOL_HEAD_0;
-	frame[1] = LORA_PROTOCOL_HEAD_1;
-	frame[2] = LORA_PROTOCOL_VERSION;
-	frame[3] = type;
-	frame[4] = src_role;
-	frame[5] = src_group;
-	frame[6] = dst_role;
-	frame[7] = dst_group;
-	frame[8] = (uint8_t)(flow_id & 0x00FFU);
-	frame[9] = (uint8_t)(flow_id >> 8U);
-	frame[10] = data_len;
-	if ((data_len > 0U) && (data != NULL))
-	{
-		memcpy(&frame[LORA_PROTOCOL_HEADER_SIZE], data, data_len);
-	}
-
-	total_length = LORA_PROTOCOL_HEADER_SIZE + data_len;
-	crc = LoraProtocolCrc16(frame, total_length);
-	frame[total_length] = (uint8_t)(crc & 0x00FFU);
-	frame[total_length + 1U] = (uint8_t)(crc >> 8U);
-	HAL_UART_Transmit(&huart2, frame, total_length + LORA_PROTOCOL_CRC_SIZE, 100U);
-}
-
-void LoraProtocolFeedByte(uint8_t data)
-{
-	if (s_protocol_rx_ready != 0U)
-	{
-		return;
-	}
-
-	if (s_protocol_rx_index == 0U)
-	{
-		if (data == LORA_PROTOCOL_HEAD_0)
-		{
-			s_protocol_rx_buffer[s_protocol_rx_index++] = data;
-		}
-		return;
-	}
-
-	if (s_protocol_rx_index == 1U)
-	{
-		if (data == LORA_PROTOCOL_HEAD_1)
-		{
-			s_protocol_rx_buffer[s_protocol_rx_index++] = data;
-		}
-		else if (data == LORA_PROTOCOL_HEAD_0)
-		{
-			s_protocol_rx_buffer[0] = data;
-		}
-		else
-		{
-			s_protocol_rx_index = 0U;
-		}
-		return;
-	}
-
-	if (s_protocol_rx_index >= LORA_PROTOCOL_FRAME_MAX_SIZE)
-	{
-		s_protocol_rx_index = 0U;
-		s_protocol_rx_expected = 0U;
-		return;
-	}
-
-	s_protocol_rx_buffer[s_protocol_rx_index++] = data;
-	if (s_protocol_rx_index == LORA_PROTOCOL_HEADER_SIZE)
-	{
-		if (s_protocol_rx_buffer[10] > LORA_PROTOCOL_MAX_PAYLOAD)
-		{
-			s_protocol_rx_index = 0U;
-			return;
-		}
-		s_protocol_rx_expected = (uint8_t)(LORA_PROTOCOL_HEADER_SIZE +
-			s_protocol_rx_buffer[10] + LORA_PROTOCOL_CRC_SIZE);
-	}
-
-	if ((s_protocol_rx_expected != 0U) &&
-		(s_protocol_rx_index == s_protocol_rx_expected))
-	{
-		s_protocol_rx_ready = 1U;
-	}
-}
-
-static uint8_t LoraProtocolTakeFrame(LoraProtocolFrame *frame)
-{
-	uint8_t data_len;
-	uint16_t crc_received;
-	uint16_t crc_calculated;
-	uint16_t frame_length;
-	uint8_t valid = 0U;
-
-	if ((frame == NULL) || (s_protocol_rx_ready == 0U))
-	{
-		return 0U;
-	}
-
-	data_len = s_protocol_rx_buffer[10];
-	frame_length = LORA_PROTOCOL_HEADER_SIZE + data_len;
-	if ((data_len <= LORA_PROTOCOL_MAX_PAYLOAD) &&
-		(s_protocol_rx_expected == (frame_length + LORA_PROTOCOL_CRC_SIZE)) &&
-		(s_protocol_rx_buffer[2] == LORA_PROTOCOL_VERSION))
-	{
-		crc_received = (uint16_t)s_protocol_rx_buffer[frame_length] |
-			((uint16_t)s_protocol_rx_buffer[frame_length + 1U] << 8U);
-		crc_calculated = LoraProtocolCrc16(s_protocol_rx_buffer, frame_length);
-		if (crc_received == crc_calculated)
-		{
-			frame->type = s_protocol_rx_buffer[3];
-			frame->src_role = s_protocol_rx_buffer[4];
-			frame->src_group = s_protocol_rx_buffer[5];
-			frame->dst_role = s_protocol_rx_buffer[6];
-			frame->dst_group = s_protocol_rx_buffer[7];
-			frame->flow_id = (uint16_t)s_protocol_rx_buffer[8] |
-				((uint16_t)s_protocol_rx_buffer[9] << 8U);
-			frame->data_len = data_len;
-			if (data_len > 0U)
-			{
-				memcpy(frame->data, &s_protocol_rx_buffer[LORA_PROTOCOL_HEADER_SIZE], data_len);
-			}
-			valid = 1U;
-		}
-	}
-
-	LoraProtocolResetReceiver();
-	return valid;
-}
-
-static void LoraMasterStoreTemperature(const uint8_t data[LORA_PROTOCOL_TEMPERATURE_BYTES])
-{
-	uint8_t index;
-
-	for (index = 0U; index < LORA_PROTOCOL_TEMPERATURE_COUNT; index++)
-	{
-		s_master_temperature[index] = (int16_t)((uint16_t)data[index * 2U] |
-			((uint16_t)data[index * 2U + 1U] << 8U));
-	}
-
-	/* 保持既有显示任务可读到第 1 个通道的 6 个温度；不再由此触发通风控制。 */
-	LoRaType.DS18B20_PORT = 0;
-	LoRaType.DS18B20_NUM = LORA_MAX_SENSOR_COUNT;
-	for (index = 0U; index < LORA_MAX_SENSOR_COUNT; index++)
-	{
-		LoRaType.DS18B20_Data[index] = s_master_temperature[index];
-	}
-}
-
-static void LoraMasterSendTemperaturePoll(void)
-{
-	uint8_t read_mode = 0U;
-
-	s_master_waiting_flow_id = s_master_next_flow_id++;
-	if (s_master_next_flow_id == 0U)
-	{
-		s_master_next_flow_id = 1U;
-	}
-	LoraProtocolSendFrame(LORA_TYPE_READ_TEMP,
-		LORA_ROLE_MASTER, LORA_MASTER_GROUP,
-		LORA_ROLE_SLAVE, LORA_MASTER_GROUP,
-		s_master_waiting_flow_id, &read_mode, 1U);
-	LoraMasterPollCount++;
-}
 
 
 /*****************************************************
@@ -264,7 +31,6 @@ void LORA_Clear(void)
 	{
 		__enable_irq();
 	}
-	LoraProtocolResetReceiver();
 }
 
 
@@ -360,7 +126,9 @@ _Bool LORA_SendCmd(char *cmd, char *res)
 *****************************************************/
 void LORA_SendData(unsigned char *data, unsigned short len)
 {
-	Usart_SendString(huart2, data, len);		//发送设备连接请求数据
+	LORA_Clear();								//清空接收缓存
+  
+  Usart_SendString(huart2, data, len);		//发送设备连接请求数据
 }
 
 
@@ -442,7 +210,6 @@ void LORA_Init(void)
 #endif
 }
 
-#if 0 /* 旧的文本发送测试接口已停用。 */
 /*****************************************************
   * 函数名称：	LoraP2PTrans
   * 函数功能：	Lora点对点透传发送数据
@@ -519,8 +286,6 @@ void LoraControlRoomTestSend(void)
 		(unsigned short)(sizeof(test_frame) - 1U));
 }
 
-#endif
-
 /*****************************************************
   * 函数名称：	LoraP2PRX
   * 函数功能：	Lora点对点透传处理接受数据
@@ -530,53 +295,6 @@ void LoraControlRoomTestSend(void)
 *****************************************************/
 void LoraP2PRX(void)
 {
-	LoraProtocolFrame frame;
-	uint8_t report_sent = 0U;
-
-	if (LoraProtocolTakeFrame(&frame) != 0U)
-	{
-		if ((frame.type == LORA_TYPE_TEMP_36) &&
-			(frame.src_role == LORA_ROLE_SLAVE) &&
-			(frame.src_group == LORA_MASTER_GROUP) &&
-			(frame.dst_role == LORA_ROLE_MASTER) &&
-			(frame.dst_group == LORA_MASTER_GROUP) &&
-			(frame.flow_id == s_master_waiting_flow_id) &&
-			(frame.data_len == LORA_PROTOCOL_TEMPERATURE_BYTES))
-		{
-			LoraMasterStoreTemperature(frame.data);
-			LoraMasterTemperatureRxCount++;
-			memcpy(s_master_report_data, frame.data, LORA_PROTOCOL_TEMPERATURE_BYTES);
-			s_master_report_flow_id = frame.flow_id;
-			s_master_report_pending = 1U;
-			s_master_waiting_flow_id = 0U;
-		}
-	}
-
-	if ((s_master_report_pending != 0U) &&
-		(s_master_cycle_elapsed_ms >= LORA_MASTER_REPORT_TIME_MS))
-	{
-		LoraProtocolSendFrame(LORA_TYPE_TEMP_36,
-			LORA_ROLE_MASTER, LORA_MASTER_GROUP,
-			LORA_ROLE_CONTROL, LORA_CONTROL_GROUP,
-			s_master_report_flow_id, s_master_report_data,
-			LORA_PROTOCOL_TEMPERATURE_BYTES);
-		LoraMasterTemperatureForwardCount++;
-		s_master_report_pending = 0U;
-		report_sent = 1U;
-	}
-
-	if ((s_master_cycle_elapsed_ms >= LORA_MASTER_POLL_PERIOD_MS) &&
-		(report_sent == 0U))
-	{
-		LoraMasterSendTemperaturePoll();
-		s_master_cycle_elapsed_ms = 0U;
-	}
-	else if (s_master_cycle_elapsed_ms < LORA_MASTER_POLL_PERIOD_MS)
-	{
-		s_master_cycle_elapsed_ms++;
-	}
-
-#if 0 /* 旧文本报文和自动通风控制已停用，保留仅供历史对照。 */
   int Tdata[17] = {0};
   int parse_count;
   
@@ -649,7 +367,6 @@ void LoraP2PRX(void)
       LORA_Clear();       /* 丢弃非温度帧，释放接收缓冲区 */
     }
   }
-#endif
 }
 
 

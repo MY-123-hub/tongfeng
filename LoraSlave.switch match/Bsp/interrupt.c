@@ -4,7 +4,6 @@
 #include "stdio.h"
 #include "bsp_ds18b20.h"
 #include "bsp_led.h"
-#include "lora.h"
 
 volatile uint16_t time_100ms = 0;
 
@@ -16,18 +15,13 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     }
 }
 
-volatile uint8_t Rx2Buffer[128], rx2_pointer, rx2_data;
+volatile uint8_t Rx2Buffer[100], rx2_pointer, rx2_data;
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-  if (huart->Instance == USART2)
-  {
-    LoraProtocolFeedByte(rx2_data);
-    if (rx2_pointer < (sizeof(Rx2Buffer) - 1U)) {
-      Rx2Buffer[rx2_pointer++] = rx2_data;
-      Rx2Buffer[rx2_pointer] = '\0';
-    }
-    HAL_UART_Receive_IT(&huart2, &rx2_data, 1);
+  if (rx2_pointer < sizeof(Rx2Buffer)) {
+    Rx2Buffer[rx2_pointer++] = rx2_data;
   }
+  HAL_UART_Receive_IT(&huart2, &rx2_data, 1);
 }
 
 SensorType Sensor_Detect(GPIO_TypeDef *GPIOx, uint16_t PINx)

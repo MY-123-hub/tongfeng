@@ -19,7 +19,6 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "usart.h"
-#include "lora.h"
 
 /* USER CODE BEGIN 0 */
 
@@ -331,7 +330,6 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if(huart->Instance == USART2)
   {
-    LoraProtocolFeedByte(rx2_data);
     UART_StoreRxByte(Rx2Buffer, &rx2_pointer, &rx2_frame_ready, &rx2_overflow, rx2_data);
     HAL_UART_Receive_IT(&huart2,&rx2_data,1);
   }

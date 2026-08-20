@@ -120,7 +120,6 @@ static void Sensor_Convert_All(void)
     }
 }
 
-#if 0 /* 旧文本上报路径已停用：从机仅在收到主机轮询后回传二进制温度帧。 */
 /* READ 阶段：读所有传感器 → 组帧 → 发 LoRa → LED 指示 */
 static void Sensor_Read_Send_All(void)
 {
@@ -201,71 +200,6 @@ static void Sensor_Read_Send_All(void)
                 led2_on;
             }
         }
-    }
-}
-#endif
-
-static int16_t SensorTemperatureToTenths(float temperature)
-{
-    if (temperature >= 0.0f)
-    {
-        return (int16_t)(temperature * 10.0f + 0.5f);
-    }
-
-    return (int16_t)(temperature * 10.0f - 0.5f);
-}
-
-/* READ 阶段：只更新 36 路温度缓存；LoRa 回包由 LoraSlaveProcess() 按主机轮询触发。 */
-static void Sensor_UpdateTemperatureCache(void)
-{
-    int16_t temperature[LORA_PROTOCOL_TEMPERATURE_COUNT];
-    uint8_t channel;
-    uint8_t sensor_index;
-    uint8_t cache_index;
-    static uint8_t sample_count;
-
-    for (cache_index = 0U; cache_index < LORA_PROTOCOL_TEMPERATURE_COUNT; cache_index++)
-    {
-        temperature[cache_index] = LORA_PROTOCOL_TEMPERATURE_INVALID;
-    }
-
-    for (channel = 0U; channel < 6U; channel++)
-    {
-        GPIO_TypeDef *port = DS18B20_ChannelPort[channel];
-        uint16_t pin = DS18B20_ChannelPin[channel];
-        uint8_t channel_slot = 0U;
-
-        for (sensor_index = 0U;
-             (sensor_index < DS18B20_SensorNum[channel]) && (channel_slot < 6U);
-             sensor_index++)
-        {
-            float measured_temperature;
-            float measured_humidity;
-
-            if (is_ghost_id(channel, sensor_index))
-            {
-                continue;
-            }
-
-            GXHT3W_Read_TempHum(port, pin, channel, sensor_index,
-                                 &measured_temperature, &measured_humidity);
-            if ((measured_temperature >= -20.0f) && (measured_temperature <= 80.0f))
-            {
-                temperature[channel * 6U + channel_slot] =
-                    SensorTemperatureToTenths(measured_temperature);
-            }
-            channel_slot++;
-        }
-    }
-
-    LoraSlaveUpdateTemperatureCache(temperature);
-
-    /* 不再使用阻塞式 LED 闪烁，以免错过主机轮询。 */
-    sample_count++;
-    if (sample_count >= 10U)
-    {
-        sample_count = 0U;
-        led2_toggle;
     }
 }
 /* USER CODE END 0 */
@@ -355,9 +289,6 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    /* 主机轮询一到即处理；不得被 100ms 采样节拍限制。 */
-    LoraSlaveProcess();
-
     /* 三阶段采样状态机：CONVERT → WAIT(750ms) → READ，用 time_100ms(100ms 节拍) 推进 */
     if(time_100ms >= 10)
     {
@@ -378,7 +309,7 @@ int main(void)
           break;
 
         case PHASE_READ:
-          Sensor_UpdateTemperatureCache();
+          Sensor_Read_Send_All();
           s_phase = PHASE_CONVERT;
           break;
       }

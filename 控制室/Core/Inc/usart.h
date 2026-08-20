@@ -41,7 +41,7 @@ extern UART_HandleTypeDef huart2;
 extern UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN Private defines */
-#define UART_RX_BUFFER_SIZE 128U
+#define UART_RX_BUFFER_SIZE 100U
 
 /* USER CODE END Private defines */
 

@@ -2,299 +2,14 @@
 
 
 #include "dip_swich.h"
-#include <stdarg.h>
 
 LoRaTypeDef LoRaType = {0};
-volatile uint32_t LoraControlTemperatureRxCount;
-volatile uint32_t LoraControlUart1TxCount;
-volatile uint32_t LoraControlUart1TxErrorCount;
 uint16_t LORA_cntPre = 0;
 static char *LORA_lastCommand;
 static uint8_t LORA_commandFailures;
 
 #define LORA_MAX_SENSOR_COUNT 6U
 #define LORA_COMMAND_RETRY_COUNT 3U
-
-#define LORA_MASTER_GROUP 0x01U
-#define LORA_CONTROL_GROUP 0x00U
-#define LORA_CONTROL_UART1_TEXT_SIZE 1024U
-
-#define UTF8_MASTER    "\xE4\xB8\xBB\xE6\x9C\xBA"
-#define UTF8_SLAVE     "\xE4\xBB\x8E\xE6\x9C\xBA"
-#define UTF8_DATA_TYPE "\xE6\x95\xB0\xE6\x8D\xAE\xE7\xB1\xBB\xE5\x9E\x8B"
-#define UTF8_PATH      "\xE8\xB7\xAF"
-#define UTF8_TEMP      "\xE6\xB8\xA9\xE5\xBA\xA6"
-#define UTF8_FLOW      "\xE6\xB5\x81\xE6\xB0\xB4\xE5\x8F\xB7"
-#define UTF8_PORT      "\xE7\xAB\xAF\xE5\x8F\xA3"
-#define UTF8_INVALID   "\xE6\x97\xA0\xE6\x95\x88"
-#define UTF8_PACKET    "\xE6\x95\xB0\xE6\x8D\xAE\xE5\x8C\x85"
-#define UTF8_BEGIN     "\xE5\xBC\x80\xE5\xA7\x8B"
-#define UTF8_END       "\xE7\xBB\x93\xE6\x9D\x9F"
-#define UTF8_PROBE     "\xE6\x8E\xA2\xE5\xA4\xB4"
-#define UTF8_CELSIUS   "\xE2\x84\x83"
-
-static uint8_t s_protocol_rx_buffer[LORA_PROTOCOL_FRAME_MAX_SIZE];
-static volatile uint8_t s_protocol_rx_index;
-static volatile uint8_t s_protocol_rx_expected;
-static volatile uint8_t s_protocol_rx_ready;
-static int16_t s_control_temperature[LORA_PROTOCOL_TEMPERATURE_COUNT];
-static char s_control_uart1_text[LORA_CONTROL_UART1_TEXT_SIZE];
-
-static void LoraProtocolResetReceiver(void)
-{
-	uint32_t primask = __get_PRIMASK();
-
-	__disable_irq();
-	s_protocol_rx_index = 0U;
-	s_protocol_rx_expected = 0U;
-	s_protocol_rx_ready = 0U;
-	if (primask == 0U)
-	{
-		__enable_irq();
-	}
-}
-
-static uint16_t LoraProtocolCrc16(const uint8_t *data, uint16_t length)
-{
-	uint16_t crc = 0xFFFFU;
-	uint16_t index;
-	uint8_t bit;
-
-	for (index = 0U; index < length; index++)
-	{
-		crc ^= data[index];
-		for (bit = 0U; bit < 8U; bit++)
-		{
-			if ((crc & 0x0001U) != 0U)
-			{
-				crc = (uint16_t)((crc >> 1U) ^ 0xA001U);
-			}
-			else
-			{
-				crc >>= 1U;
-			}
-		}
-	}
-
-	return crc;
-}
-
-void LoraProtocolFeedByte(uint8_t data)
-{
-	if (s_protocol_rx_ready != 0U)
-	{
-		return;
-	}
-
-	if (s_protocol_rx_index == 0U)
-	{
-		if (data == LORA_PROTOCOL_HEAD_0)
-		{
-			s_protocol_rx_buffer[s_protocol_rx_index++] = data;
-		}
-		return;
-	}
-
-	if (s_protocol_rx_index == 1U)
-	{
-		if (data == LORA_PROTOCOL_HEAD_1)
-		{
-			s_protocol_rx_buffer[s_protocol_rx_index++] = data;
-		}
-		else if (data == LORA_PROTOCOL_HEAD_0)
-		{
-			s_protocol_rx_buffer[0] = data;
-		}
-		else
-		{
-			s_protocol_rx_index = 0U;
-		}
-		return;
-	}
-
-	if (s_protocol_rx_index >= LORA_PROTOCOL_FRAME_MAX_SIZE)
-	{
-		s_protocol_rx_index = 0U;
-		s_protocol_rx_expected = 0U;
-		return;
-	}
-
-	s_protocol_rx_buffer[s_protocol_rx_index++] = data;
-	if (s_protocol_rx_index == LORA_PROTOCOL_HEADER_SIZE)
-	{
-		if (s_protocol_rx_buffer[10] > LORA_PROTOCOL_MAX_PAYLOAD)
-		{
-			s_protocol_rx_index = 0U;
-			return;
-		}
-		s_protocol_rx_expected = (uint8_t)(LORA_PROTOCOL_HEADER_SIZE +
-			s_protocol_rx_buffer[10] + LORA_PROTOCOL_CRC_SIZE);
-	}
-
-	if ((s_protocol_rx_expected != 0U) &&
-		(s_protocol_rx_index == s_protocol_rx_expected))
-	{
-		s_protocol_rx_ready = 1U;
-	}
-}
-
-static uint8_t LoraProtocolTakeFrame(LoraProtocolFrame *frame)
-{
-	uint8_t data_len;
-	uint16_t crc_received;
-	uint16_t crc_calculated;
-	uint16_t frame_length;
-	uint8_t valid = 0U;
-
-	if ((frame == NULL) || (s_protocol_rx_ready == 0U))
-	{
-		return 0U;
-	}
-
-	data_len = s_protocol_rx_buffer[10];
-	frame_length = LORA_PROTOCOL_HEADER_SIZE + data_len;
-	if ((data_len <= LORA_PROTOCOL_MAX_PAYLOAD) &&
-		(s_protocol_rx_expected == (frame_length + LORA_PROTOCOL_CRC_SIZE)) &&
-		(s_protocol_rx_buffer[2] == LORA_PROTOCOL_VERSION))
-	{
-		crc_received = (uint16_t)s_protocol_rx_buffer[frame_length] |
-			((uint16_t)s_protocol_rx_buffer[frame_length + 1U] << 8U);
-		crc_calculated = LoraProtocolCrc16(s_protocol_rx_buffer, frame_length);
-		if (crc_received == crc_calculated)
-		{
-			frame->type = s_protocol_rx_buffer[3];
-			frame->src_role = s_protocol_rx_buffer[4];
-			frame->src_group = s_protocol_rx_buffer[5];
-			frame->dst_role = s_protocol_rx_buffer[6];
-			frame->dst_group = s_protocol_rx_buffer[7];
-			frame->flow_id = (uint16_t)s_protocol_rx_buffer[8] |
-				((uint16_t)s_protocol_rx_buffer[9] << 8U);
-			frame->data_len = data_len;
-			if (data_len > 0U)
-			{
-				memcpy(frame->data, &s_protocol_rx_buffer[LORA_PROTOCOL_HEADER_SIZE], data_len);
-			}
-			valid = 1U;
-		}
-	}
-
-	LoraProtocolResetReceiver();
-	return valid;
-}
-
-static void LoraControlStoreTemperature(const uint8_t data[LORA_PROTOCOL_TEMPERATURE_BYTES])
-{
-	uint8_t index;
-
-	for (index = 0U; index < LORA_PROTOCOL_TEMPERATURE_COUNT; index++)
-	{
-		s_control_temperature[index] = (int16_t)((uint16_t)data[index * 2U] |
-			((uint16_t)data[index * 2U + 1U] << 8U));
-	}
-
-	/* 兼容现有显示任务，仅更新第 1 个通道 6 个温度。 */
-	LoRaType.DS18B20_PORT = 0;
-	LoRaType.DS18B20_NUM = LORA_MAX_SENSOR_COUNT;
-	for (index = 0U; index < LORA_MAX_SENSOR_COUNT; index++)
-	{
-		LoRaType.DS18B20_Data[index] = s_control_temperature[index];
-	}
-}
-
-static uint16_t LoraControlTextAppend(uint16_t offset, const char *format, ...)
-{
-	va_list args;
-	size_t remaining;
-	int written;
-
-	if ((format == NULL) || (offset >= LORA_CONTROL_UART1_TEXT_SIZE))
-	{
-		return offset;
-	}
-
-	remaining = LORA_CONTROL_UART1_TEXT_SIZE - offset;
-	va_start(args, format);
-	written = vsnprintf(&s_control_uart1_text[offset], remaining, format, args);
-	va_end(args);
-
-	if (written < 0)
-	{
-		return offset;
-	}
-	if ((size_t)written >= remaining)
-	{
-		return LORA_CONTROL_UART1_TEXT_SIZE - 1U;
-	}
-
-	return (uint16_t)(offset + (uint16_t)written);
-}
-
-static uint16_t LoraControlAppendTemperature(uint16_t offset, int16_t temperature)
-{
-	int32_t magnitude;
-
-	if (temperature == LORA_PROTOCOL_TEMPERATURE_INVALID)
-	{
-		return LoraControlTextAppend(offset, UTF8_INVALID);
-	}
-
-	magnitude = (int32_t)temperature;
-	if (magnitude < 0)
-	{
-		magnitude = -magnitude;
-		return LoraControlTextAppend(offset, "-%ld.%ld" UTF8_CELSIUS,
-			(long)(magnitude / 10L), (long)(magnitude % 10L));
-	}
-
-	return LoraControlTextAppend(offset, "%ld.%ld" UTF8_CELSIUS,
-		(long)(magnitude / 10L), (long)(magnitude % 10L));
-}
-
-static uint16_t LoraControlBuildUart1Text(const LoraProtocolFrame *frame)
-{
-	uint16_t offset = 0U;
-	uint8_t port;
-	uint8_t probe;
-	uint8_t temperature_index;
-
-	if (frame == NULL)
-	{
-		return 0U;
-	}
-
-	s_control_uart1_text[0] = '\0';
-	offset = LoraControlTextAppend(offset, "[" UTF8_PACKET UTF8_BEGIN "]\r\n");
-	/* 当前架构中 Mx 与 Sx 一一配对，因此从机编号与主机组号相同。 */
-	offset = LoraControlTextAppend(offset,
-		UTF8_MASTER ":M%u," UTF8_SLAVE ":S%u,"
-		UTF8_DATA_TYPE ":36" UTF8_PATH UTF8_TEMP ","
-		UTF8_FLOW ":%u\r\n",
-		(unsigned int)frame->src_group,
-		(unsigned int)frame->src_group,
-		(unsigned int)frame->flow_id);
-
-	for (port = 0U; port < 6U; port++)
-	{
-		offset = LoraControlTextAppend(offset, UTF8_PORT "%u:",
-			(unsigned int)(port + 1U));
-		for (probe = 0U; probe < 6U; probe++)
-		{
-			temperature_index = (uint8_t)(port * 6U + probe);
-			offset = LoraControlTextAppend(offset, UTF8_PROBE "%u=",
-				(unsigned int)(probe + 1U));
-			offset = LoraControlAppendTemperature(offset,
-				s_control_temperature[temperature_index]);
-			if (probe < 5U)
-			{
-				offset = LoraControlTextAppend(offset, ",");
-			}
-		}
-		offset = LoraControlTextAppend(offset, "\r\n");
-	}
-
-	offset = LoraControlTextAppend(offset, "[" UTF8_PACKET UTF8_END "]\r\n\r\n");
-	return offset;
-}
 
 
 /*****************************************************
@@ -318,7 +33,6 @@ void LORA_Clear(void)
 	{
 		__enable_irq();
 	}
-	LoraProtocolResetReceiver();
 }
 
 
@@ -414,7 +128,9 @@ _Bool LORA_SendCmd(char *cmd, char *res)
 *****************************************************/
 void LORA_SendData(unsigned char *data, unsigned short len)
 {
-	Usart_SendString(huart2, data, len);		//发送设备连接请求数据
+	LORA_Clear();								//清空接收缓存
+  
+  Usart_SendString(huart2, data, len);		//发送设备连接请求数据
 }
 
 
@@ -517,37 +233,6 @@ void LoraP2PTX(void)
 *****************************************************/
 void LoraP2PRX(void)
 {
-	LoraProtocolFrame frame;
-
-	if (LoraProtocolTakeFrame(&frame) != 0U)
-	{
-		if ((frame.type == LORA_TYPE_TEMP_36) &&
-			(frame.src_role == LORA_ROLE_MASTER) &&
-			(frame.src_group == LORA_MASTER_GROUP) &&
-			(frame.dst_role == LORA_ROLE_CONTROL) &&
-			(frame.dst_group == LORA_CONTROL_GROUP) &&
-			(frame.data_len == LORA_PROTOCOL_TEMPERATURE_BYTES))
-		{
-			uint16_t text_length;
-
-			LoraControlStoreTemperature(frame.data);
-			LoraControlTemperatureRxCount++;
-			text_length = LoraControlBuildUart1Text(&frame);
-			/* USART1/PA9 输出 UTF-8 中文文本，串口助手使用文本模式。 */
-			if ((text_length > 0U) &&
-				(HAL_UART_Transmit(&huart1, (uint8_t *)s_control_uart1_text,
-				text_length, 200U) == HAL_OK))
-			{
-				LoraControlUart1TxCount++;
-			}
-			else
-			{
-				LoraControlUart1TxErrorCount++;
-			}
-		}
-	}
-
-#if 0 /* 旧文本报文和自动通风控制已停用，保留仅供历史对照。 */
   int Tdata[17] = {0};
   int parse_count;
   
@@ -620,7 +305,6 @@ void LoraP2PRX(void)
       LORA_Clear();       /* 丢弃非温度帧，释放接收缓冲区 */
     }
   }
-#endif
 }
 
 

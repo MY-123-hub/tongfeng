@@ -117,15 +117,12 @@ void MX_FREERTOS_Init(void) {
   defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
 
   /* definition and creation of LoRaTask */
-  osThreadDef(LoRaTask, StartLoRaTask, osPriorityIdle, 0, 256);
+  osThreadDef(LoRaTask, StartLoRaTask, osPriorityIdle, 0, 128);
   LoRaTaskHandle = osThreadCreate(osThread(LoRaTask), NULL);
 
-  /* USART1 当前作为电脑调试输出，关闭 DGUS 周期发送，避免污染调试文本。 */
-#if 0
   /* definition and creation of DGUSTask */
   osThreadDef(DGUSTask, StartDGUSTask, osPriorityIdle, 0, 128);
   DGUSTaskHandle = osThreadCreate(osThread(DGUSTask), NULL);
-#endif
 
   /* definition and creation of ModBusTask */
   osThreadDef(ModBusTask, StartModBusTask, osPriorityIdle, 0, 128);
@@ -180,7 +177,8 @@ void StartLoRaTask(void const * argument)
     /* lora 点对点通讯接受处理 —— 通风条件判断与执行 */
     LoraP2PRX();
 
-    /* USART1 当前连接电脑，DGUS 触摸应答停用。 */
+    /* DGUS 触摸数据应答 */
+    DGUS_TouchAck();
 
     /* ===== 测试模式（暂时注释）===== */
 #if 0
