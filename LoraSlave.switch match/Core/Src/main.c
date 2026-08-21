@@ -59,8 +59,13 @@
 /* USER CODE BEGIN PV */
 DHT11_Data_TypeDef DHT11_Data;
 
-GPIO_TypeDef* DS18B20_ChannelPort[6]={GPIOA,GPIOA,GPIOA,GPIOA,GPIOB,GPIOB};
-uint16_t DS18B20_ChannelPin[6]={GPIO_PIN_5,GPIO_PIN_6,GPIO_PIN_7,GPIO_PIN_8,GPIO_PIN_15,GPIO_PIN_14};
+#define SENSOR_PORT_COUNT            (6U)
+#define SENSOR_POINTS_PER_PORT       (6U)
+#define SENSOR_TOTAL_POINT_COUNT     (SENSOR_PORT_COUNT * SENSOR_POINTS_PER_PORT)
+#define SENSOR_CONVERT_WAIT_MS       (800U)
+
+GPIO_TypeDef* DS18B20_ChannelPort[SENSOR_PORT_COUNT]={GPIOA,GPIOA,GPIOA,GPIOA,GPIOB,GPIOB};
+uint16_t DS18B20_ChannelPin[SENSOR_PORT_COUNT]={GPIO_PIN_5,GPIO_PIN_6,GPIO_PIN_7,GPIO_PIN_8,GPIO_PIN_15,GPIO_PIN_14};
 
 
 char lora_sp[200];
@@ -81,6 +86,9 @@ void SystemClock_Config(void);
 static uint8_t s_sample_active;
 static uint32_t s_sample_ready_tick;
 static uint16_t s_sample_flow_id;
+static uint32_t s_sensor_rescan_count;
+static uint32_t s_sensor_read_failure_count;
+static uint32_t s_sensor_overflow_count;
 
 /* 判断 ROM 序列号是否全 0（幽灵/空槽） */
 static uint8_t is_ghost_id(uint8_t channel, uint8_t idx)
@@ -92,17 +100,114 @@ static uint8_t is_ghost_id(uint8_t channel, uint8_t idx)
     return 1;
 }
 
+/* 每个 Port 最多返回 6 点；物理总线多出的传感器不占用其他 Port 的槽位。 */
+static uint8_t Sensor_BoundedCount(uint8_t channel)
+{
+    uint8_t count = DS18B20_SensorNum[channel];
+    if (count > MaxSensorNum)
+    {
+        return MaxSensorNum;
+    }
+    return count;
+}
+
+/* 每次新鲜温度请求前重扫六条 1-Wire 总线，断开设备不会沿用旧 ROM。 */
+static void Sensor_Rescan_All(uint8_t cold_start)
+{
+    uint8_t channel;
+
+    for (channel = 0U; channel < SENSOR_PORT_COUNT; channel++)
+    {
+        memset(DS18B20_ID[channel], 0, sizeof(DS18B20_ID[channel]));
+        DS18B20_SensorNum[channel] = 0U;
+        if (DS18B20_Init(DS18B20_ChannelPort[channel], DS18B20_ChannelPin[channel]) == 0U)
+        {
+            /* 首次上电保留原工程的寄生供电充电时间；业务请求不能等待 3 秒。 */
+            if (cold_start != 0U)
+            {
+                HAL_Delay(500U);
+            }
+            DS18B20_Search_Rom(DS18B20_ChannelPort[channel], DS18B20_ChannelPin[channel], channel);
+        }
+        if (Sensor_BoundedCount(channel) > SENSOR_POINTS_PER_PORT)
+        {
+            s_sensor_overflow_count++;
+        }
+    }
+    s_sensor_rescan_count++;
+}
+
+static uint8_t Sensor_HasAnyDetected(void)
+{
+    uint8_t channel;
+    uint8_t sensor_index;
+
+    for (channel = 0U; channel < SENSOR_PORT_COUNT; channel++)
+    {
+        for (sensor_index = 0U; sensor_index < Sensor_BoundedCount(channel); sensor_index++)
+        {
+            if (is_ghost_id(channel, sensor_index) == 0U)
+            {
+                return 1U;
+            }
+        }
+    }
+    return 0U;
+}
+
+/* 按 ROM 家族码调用对应驱动，读取或 CRC 失败时返回无效。 */
+static uint8_t Sensor_ReadOneTemperature(GPIO_TypeDef *port, uint16_t pin,
+                                         uint8_t channel, uint8_t sensor_index,
+                                         float *temperature)
+{
+    float humidity = 0.0f;
+
+    if (temperature == NULL)
+    {
+        return 0U;
+    }
+    *temperature = 0.0f;
+    if (DS18B20_ID[channel][sensor_index][0] == 0x28U)
+    {
+        *temperature = DS18B20_Read_Temp(port, pin, channel, sensor_index);
+        return (*temperature != -85.0f) ? 1U : 0U;
+    }
+    if (DS18B20_ID[channel][sensor_index][0] == 0x2CU)
+    {
+        return GXHT3W_Read_TempHum(port, pin, channel, sensor_index, temperature, &humidity);
+    }
+    return 0U;
+}
+
+/* 不设置业务温度范围，但在写入 int16_t 前防止数值转换溢出。 */
+static uint8_t Sensor_ToDeciCelsius(float temperature, int16_t *result)
+{
+    float scaled;
+
+    if ((result == NULL) || (temperature == 0.0f))
+    {
+        return 0U;
+    }
+    scaled = temperature * 10.0f;
+    if ((scaled < -32768.0f) || (scaled > 32767.0f))
+    {
+        return 0U;
+    }
+    *result = (int16_t)(scaled + ((scaled >= 0.0f) ? 0.5f : -0.5f));
+    return 1U;
+}
+
 /* CONVERT 阶段：对所有真实传感器发转换命令，随后统一强上拉 DQ */
 static void Sensor_Convert_All(void)
 {
     uint8_t ch, n;
-    for (ch = 0; ch < 6; ch++) {
+    for (ch = 0U; ch < SENSOR_PORT_COUNT; ch++) {
         GPIO_TypeDef *port = DS18B20_ChannelPort[ch];
         uint16_t pin = DS18B20_ChannelPin[ch];
 
         /* 该通道有真实传感器才转换 */
         uint8_t has = 0;
-        for (n = 0; n < DS18B20_SensorNum[ch]; n++) {
+        for (n = 0U; n < Sensor_BoundedCount(ch); n++) {
             if (!is_ghost_id(ch, n)) { has = 1; break; }
         }
         if (!has) continue;
@@ -120,35 +225,42 @@ static void Sensor_Convert_All(void)
     }
 }
 
-/* 读取36点。温度为0或不在传感器有效范围内，按项目约定写0（无效点）。 */
+/* 读取 36 点；未接、ROM/数据 CRC 失败和 0.0℃ 均按协议填 00 00。 */
 static void Sensor_Read_AllTemperatures(int16_t temperatures[36])
 {
     uint8_t channel, sen_idx;
-    for (channel = 0; channel < 6; channel++) {
+    if (temperatures == NULL)
+    {
+        return;
+    }
+    memset(temperatures, 0, sizeof(int16_t) * SENSOR_TOTAL_POINT_COUNT);
+
+    for (channel = 0U; channel < SENSOR_PORT_COUNT; channel++) {
         GPIO_TypeDef *port = DS18B20_ChannelPort[channel];
         uint16_t pin   = DS18B20_ChannelPin[channel];
-        uint8_t point = (uint8_t)(channel * 6U);
+        uint8_t point = (uint8_t)(channel * SENSOR_POINTS_PER_PORT);
         uint8_t real_count = 0;
 
-        for (sen_idx = 0U; sen_idx < 6U; sen_idx++) {
-            temperatures[point + sen_idx] = 0;
-        }
-
-        for (sen_idx = 0; sen_idx < DS18B20_SensorNum[channel] && real_count < 6; sen_idx++) {
-            float temperature;
-            float humidity;
+        for (sen_idx = 0U; (sen_idx < Sensor_BoundedCount(channel)) &&
+             (real_count < SENSOR_POINTS_PER_PORT); sen_idx++) {
+            float temperature = 0.0f;
+            int16_t deci_celsius;
             if (is_ghost_id(channel, sen_idx)) continue;
 
-            GXHT3W_Read_TempHum(port, pin, channel, sen_idx, &temperature, &humidity);
-#if DEBUG_LOG
-            printf("[D] ch%d[%d] fam=0x%02X T=%.2f H=%.2f\r\n",
-                    channel, sen_idx, DS18B20_ID[channel][sen_idx][0],
-                    temperature, humidity);
-#endif
-            if ((temperature >= -20.0f) && (temperature <= 80.0f) && (temperature != 0.0f)) {
-                temperatures[point + real_count] = (int16_t)(temperature * 10.0f +
-                    ((temperature >= 0.0f) ? 0.5f : -0.5f));
+            if ((Sensor_ReadOneTemperature(port, pin, channel, sen_idx, &temperature) != 0U) &&
+                (Sensor_ToDeciCelsius(temperature, &deci_celsius) != 0U))
+            {
+                temperatures[point + real_count] = deci_celsius;
             }
+            else
+            {
+                s_sensor_read_failure_count++;
+            }
+#if DEBUG_LOG
+            printf("[D] ch%d[%d] fam=0x%02X T=%.2f\r\n",
+                    channel, sen_idx, DS18B20_ID[channel][sen_idx][0],
+                    temperature);
+#endif
             real_count++;
         }
     }
@@ -163,7 +275,6 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-  uint32_t num_i=0;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -218,18 +329,9 @@ int main(void)
   led2_on;
 
   CPU_TS_TmrInit();
-  sensor_type = Sensor_Detect(DS18B20_ChannelPort[0], DS18B20_ChannelPin[0]);
-  if (sensor_type == SENSOR_TYPE_OLD) { led3_on; }
-  else if (sensor_type == SENSOR_TYPE_NEW) { led3_off; }
-
-  /* init all 6 channels: search ROM once */
-  for(uint8_t ch=0; ch<6; ch++)
-  {
-    DS18B20_Init(DS18B20_ChannelPort[ch], DS18B20_ChannelPin[ch]);
-    HAL_Delay(500);
-    DS18B20_Search_Rom(DS18B20_ChannelPort[ch], DS18B20_ChannelPin[ch], ch);
-    printf("CH%d sensors:%d\r\n", ch, DS18B20_SensorNum[ch]);
-  }
+  Sensor_Rescan_All(1U);
+  sensor_type = (Sensor_HasAnyDetected() != 0U) ? SENSOR_TYPE_NEW : SENSOR_TYPE_NONE;
+  if (sensor_type == SENSOR_TYPE_NEW) { led3_off; }
 
   /* USER CODE END 2 */
 
@@ -247,15 +349,16 @@ int main(void)
     if ((s_sample_active == 0U) &&
         (SlaveRuntime_TakeSampleRequest(&requested_flow) != 0U))
     {
+      Sensor_Rescan_All(0U);
       Sensor_Convert_All();
       s_sample_flow_id = requested_flow;
-      s_sample_ready_tick = now + 800U;
+      s_sample_ready_tick = HAL_GetTick() + SENSOR_CONVERT_WAIT_MS;
       s_sample_active = 1U;
     }
 
     if ((s_sample_active != 0U) && ((uint32_t)(now - s_sample_ready_tick) < 0x80000000UL))
     {
-      int16_t temperatures[36];
+      int16_t temperatures[SENSOR_TOTAL_POINT_COUNT];
       Sensor_Read_AllTemperatures(temperatures);
       SlaveRuntime_CompleteSample(s_sample_flow_id, temperatures);
       s_sample_active = 0U;

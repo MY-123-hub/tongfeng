@@ -245,10 +245,16 @@ void GXHT3W_Start_Convert(GPIO_TypeDef *GPIOx, uint16_t PINx, uint8_t channel, u
 }
 
 /* 读取 GXHT3W 温湿度（Match ROM + 0xBE），先切回开漏结束强上拉 */
-void GXHT3W_Read_TempHum(GPIO_TypeDef *GPIOx, uint16_t PINx, uint8_t channel, uint8_t idx, float *temp, float *hum)
+uint8_t GXHT3W_Read_TempHum(GPIO_TypeDef *GPIOx, uint16_t PINx, uint8_t channel,
+                            uint8_t idx, float *temp, float *hum)
 {
     uint8_t buf[9], j;
     uint16_t hum_raw;
+
+    if ((temp == NULL) || (hum == NULL) || (channel >= 6U) || (idx >= MaxSensorNum))
+    {
+        return 0U;
+    }
 
     *temp = 0;
     *hum = 0;
@@ -274,7 +280,7 @@ void GXHT3W_Read_TempHum(GPIO_TypeDef *GPIOx, uint16_t PINx, uint8_t channel, ui
                DS18B20_ID[channel][idx][6], DS18B20_ID[channel][idx][7],
                buf[0], buf[8], DS18B20_Crc(buf, 8));
 #endif
-        return;
+        return 0U;
     }
 
 #if DEBUG_LOG
@@ -291,6 +297,7 @@ void GXHT3W_Read_TempHum(GPIO_TypeDef *GPIOx, uint16_t PINx, uint8_t channel, ui
         hum_raw = (uint16_t)((buf[6] << 8) | buf[7]);
         *hum = 100.0f * (float)hum_raw / 65535.0f;
     }
+    return 1U;
 }
 
 /* ==================== Search ROM / CRC ==================== */

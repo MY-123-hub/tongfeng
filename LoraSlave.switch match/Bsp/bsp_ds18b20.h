@@ -34,7 +34,8 @@ void DS18B20_Write_Byte(GPIO_TypeDef * GPIOx,uint16_t PINx,uint8_t dat);
 void DS18B20_Start_Convert(GPIO_TypeDef *GPIOx, uint16_t PINx, uint8_t channel, uint8_t idx);
 float DS18B20_Read_Temp(GPIO_TypeDef *GPIOx, uint16_t PINx, uint8_t channel, uint8_t idx);
 void GXHT3W_Start_Convert(GPIO_TypeDef *GPIOx, uint16_t PINx, uint8_t channel, uint8_t idx);
-void GXHT3W_Read_TempHum(GPIO_TypeDef *GPIOx, uint16_t PINx, uint8_t channel, uint8_t idx, float *temp, float *hum);
+uint8_t GXHT3W_Read_TempHum(GPIO_TypeDef *GPIOx, uint16_t PINx, uint8_t channel,
+                            uint8_t idx, float *temp, float *hum);
 uint8_t DS18B20_Crc(uint8_t *addr, uint8_t len);
 
 

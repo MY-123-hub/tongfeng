@@ -16,7 +16,9 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     }
 }
 
-volatile uint8_t Rx2Buffer[100], rx2_pointer, rx2_data;
+volatile uint8_t Rx2Buffer[100];
+volatile uint8_t rx2_pointer;
+uint8_t rx2_data;
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART2) {

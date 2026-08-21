@@ -17,6 +17,7 @@
 #define FRAME_TYPE_TEMP_36           (0x02U)
 #define RX_RING_SIZE                 (256U)
 #define RX_RING_MASK                 (RX_RING_SIZE - 1U)
+#define TX_RETRY_COUNT               (3U)
 
 typedef struct
 {
@@ -50,6 +51,11 @@ static uint16_t g_sample_flow_id;
 static uint8_t g_tx_pending;
 static uint8_t g_tx_frame[FRAME_MAX_SIZE];
 static uint16_t g_tx_frame_length;
+static uint8_t g_tx_attempt_count;
+static uint8_t g_last_response_valid;
+static uint16_t g_last_response_flow_id;
+
+SlaveRuntimeDiagnostics SlaveRuntimeDiag;
 
 static uint16_t SlaveRuntime_Crc16(const uint8_t *data, uint16_t length)
 {
@@ -141,12 +147,35 @@ static void SlaveRuntime_HandleMessage(const SlaveMessage *message)
         (message->destination_group != g_local_group) ||
         (message->payload_length != 1U) || (message->payload[0] > 1U))
     {
+        SlaveRuntimeDiag.ignored_message_count++;
         return;
     }
 
-    /* 同一个流水号的重发不会再次启动转换；主机等待当前结果。 */
+    /* 同一流水号不会重复转换；完成后可重发最近的完整温度帧。 */
     if (g_sample_in_progress != 0U)
     {
+        if (message->flow_id == g_sample_flow_id)
+        {
+            SlaveRuntimeDiag.duplicate_request_count++;
+        }
+        return;
+    }
+
+    if ((g_last_response_valid != 0U) &&
+        (message->flow_id == g_last_response_flow_id))
+    {
+        SlaveRuntimeDiag.duplicate_request_count++;
+        if (g_tx_pending == 0U)
+        {
+            g_tx_attempt_count = 0U;
+            g_tx_pending = 1U;
+        }
+        return;
+    }
+
+    if (g_tx_pending != 0U)
+    {
+        SlaveRuntimeDiag.ignored_message_count++;
         return;
     }
     g_sample_flow_id = message->flow_id;
@@ -205,6 +234,10 @@ static void SlaveRuntime_PushByte(uint8_t byte)
         {
             SlaveRuntime_HandleMessage(&message);
         }
+        else
+        {
+            SlaveRuntimeDiag.invalid_frame_count++;
+        }
         SlaveRuntime_ResetParser();
     }
 }
@@ -219,6 +252,10 @@ void SlaveRuntime_Init(uint8_t local_group)
     g_sample_in_progress = 0U;
     g_tx_pending = 0U;
     g_tx_frame_length = 0U;
+    g_tx_attempt_count = 0U;
+    g_last_response_valid = 0U;
+    g_last_response_flow_id = 0U;
+    (void)memset(&SlaveRuntimeDiag, 0, sizeof(SlaveRuntimeDiag));
 }
 
 uint8_t SlaveRuntime_IsApplicationMode(void)
@@ -240,6 +277,7 @@ void SlaveRuntime_PushRxByteFromIsr(uint8_t byte)
     if (next_head == g_rx_ring.tail)
     {
         g_rx_ring.overflow_count++;
+        SlaveRuntimeDiag.rx_overflow_count++;
         return;
     }
     g_rx_ring.data[head] = byte;
@@ -259,8 +297,21 @@ void SlaveRuntime_Process(uint32_t now_ms)
     }
     if (g_tx_pending != 0U)
     {
-        LORA_SendData(g_tx_frame, g_tx_frame_length);
-        g_tx_pending = 0U;
+        if (LORA_SendData(g_tx_frame, g_tx_frame_length) != 0U)
+        {
+            g_tx_pending = 0U;
+            g_tx_attempt_count = 0U;
+        }
+        else
+        {
+            g_tx_attempt_count++;
+            if (g_tx_attempt_count >= TX_RETRY_COUNT)
+            {
+                g_tx_pending = 0U;
+                g_tx_attempt_count = 0U;
+                SlaveRuntimeDiag.tx_failure_count++;
+            }
+        }
     }
 }
 
@@ -306,6 +357,9 @@ void SlaveRuntime_CompleteSample(uint16_t flow_id, const int16_t temperatures[36
     crc = SlaveRuntime_Crc16(&g_tx_frame[2], 9U + FRAME_TEMP_PAYLOAD_SIZE);
     g_tx_frame[g_tx_frame_length - 2U] = (uint8_t)(crc & 0xFFU);
     g_tx_frame[g_tx_frame_length - 1U] = (uint8_t)(crc >> 8U);
+    g_last_response_flow_id = flow_id;
+    g_last_response_valid = 1U;
+    g_tx_attempt_count = 0U;
     g_tx_pending = 1U;
     g_sample_in_progress = 0U;
 }

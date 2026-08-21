@@ -1,7 +1,6 @@
 ﻿#include "lora.h"
 
 
-#include "dip_swich.h"
 #include "lora_stream_parser.h"
 #include "lora_transport.h"
 #include "master_queues.h"
@@ -178,10 +177,11 @@ void LORA_Init(void)
   while(LORA_SendCmd("a", "OK"))        // 进入参数配置模式 "a"——回复判定："OK"
     HAL_Delay(50);	
 
+  /* 显式选择点对点 NODE 协议，避免模块保留过往 LG210/LG220 配置。 */
+  while(LORA_SendCmd("AT+LORAPROT=NODE\r\n", "OK"))
+    HAL_Delay(50);
+
   while(LORA_SendCmd("AT+WMODE=TRANS\r\n", "OK"))        // 协议设置为透传模式 ——回复判定："OK"
-    HAL_Delay(50);	
-  
-  while(LORA_SendCmd("AT+PMODE=RUN\r\n", "OK"))        // 工作模式设置为 ”RUN“ ——回复判定："OK"
     HAL_Delay(50);	
   
   while(LORA_SendCmd("AT+ITM=20\r\n", "OK"))        // 空闲时间设置为 20（s） ——回复判定："OK"；此参数对 RUN、LSR 模式无效
@@ -211,14 +211,9 @@ void LORA_Init(void)
   while(LORA_SendCmd("AT+LBT=OFF\r\n", "OK"))        // LBT：关闭 ——回复判定："OK"；开启后 LoRa 发送前进行信道状态
     HAL_Delay(50);	
   
-  {
-    char cmd_addr[16];
-    uint8_t dip_addr = MasterIdentity_GetRawGroup();
-
-    sprintf(cmd_addr, "AT+ADDR=%u\r\n", (unsigned int)dip_addr);
-    while(LORA_SendCmd(cmd_addr, "OK"))
-      HAL_Delay(50);
-  }
+  /* 透明传输使用统一普通地址；拨码仅作为应用层协议组号，不能写入模块地址。 */
+  while(LORA_SendCmd("AT+ADDR=0\r\n", "OK"))
+    HAL_Delay(50);
   
   while(LORA_SendCmd("AT+LRTO=3\r\n", "OK"))        // 超时重传时间：3s ——回复判定："OK"
     HAL_Delay(50);	
@@ -231,6 +226,10 @@ void LORA_Init(void)
   
   while(LORA_SendCmd("AT+UART=115200,8,1,NONE,NFC\r\n", "OK"))        // 串口参数设置，流控-NFC ——回复判定："OK"
     HAL_Delay(50);	
+
+  /* 所有传输参数写完后再进入 RUN，避免部分模块固件提前离开 AT 配置状态。 */
+  while(LORA_SendCmd("AT+PMODE=RUN\r\n", "OK"))
+    HAL_Delay(50);
   
   while(LORA_SendCmd("AT+Z\r\n", "Start"))        // 重启模块，指令生效 ——回复信息："LoRa Start!"
     HAL_Delay(50);	

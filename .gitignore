@@ -33,3 +33,7 @@ Desktop.ini
 
 # Local protocol renders, build logs and other disposable workspace artifacts
 /tmp/
+
+# Python test/runtime cache
+__pycache__/
+*.pyc

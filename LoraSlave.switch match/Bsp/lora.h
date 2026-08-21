@@ -9,7 +9,11 @@
 
 
 void LORA_Init(void);
-void LORA_SendData(unsigned char *data, unsigned short len);
+uint8_t LORA_SendData(const uint8_t *data, uint16_t len);
+void LoraP2PTrans(void);
+
+extern volatile uint32_t LoraSlaveConfigErrorCount;
+extern volatile uint32_t LoraSlaveTxErrorCount;
 
 
 #endif /*__LORA_H__*/

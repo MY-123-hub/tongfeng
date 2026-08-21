@@ -1,196 +1,220 @@
-#include "usart.h"
 #include "lora.h"
-#include "stdio.h"
-#include "string.h"
-#include "interrupt.h"
+
 #include "dip_switch.h"
+#include "interrupt.h"
 #include "slave_protocol_runtime.h"
+#include "usart.h"
 
+#include <stdio.h>
+#include <string.h>
 
-volatile uint16_t LORA_cntPre = 0;
+#define LORA_AT_RETRY_COUNT          (3U)
+#define LORA_AT_REPLY_TIMEOUT_MS     (300U)
+#define LORA_APP_TX_TIMEOUT_MS       (30U)
 
+volatile uint32_t LoraSlaveConfigErrorCount;
+volatile uint32_t LoraSlaveTxErrorCount;
 
-/*****************************************************
-  * �������ƣ�	LORA_Clear
-  * �������ܣ�	��ջ���
-  * ��ڲ�����	��
-  * ���ز�����	��
-  * ˵    ����  ��
-*****************************************************/
+/**
+ ******************************************************************************
+  @功能：清空 LoRa 参数配置阶段的串口接收缓存。
+  @日期：2026-08-21
+  @参数：无
+  @返回值：无
+  @使用说明：仅在 LoRa 模块处于参数模式时调用；临界区防止 USART2 中断并发写入。
+ ******************************************************************************
+ */
 void LORA_Clear(void)
 {
+    uint32_t primask = __get_PRIMASK();
 
-	memset(Rx2Buffer, 0, sizeof(Rx2Buffer));
-	rx2_pointer = 0;
-
+    __disable_irq();
+    memset((void *)Rx2Buffer, 0, sizeof(Rx2Buffer));
+    rx2_pointer = 0U;
+    if (primask == 0U)
+    {
+        __enable_irq();
+    }
 }
 
-
-/*****************************************************
-  * �������ƣ�	LORA_WaitRecive
-  * �������ܣ�	�ȴ��������
-  * ��ڲ�����	��
-  * ���ز�����	REV_OK-�������		REV_WAIT-���ճ�ʱδ���
-  * ˵    ����  ѭ�����ü���Ƿ�������
-*****************************************************/
-_Bool LORA_WaitRecive(void)
+static uint8_t LORA_ConfigContains(const char *expected)
 {
-	if(rx2_pointer == 0) 							//������ռ���Ϊ0 ��˵��û�д��ڽ��������У�����ֱ����������������
-		return REV_WAIT;
-	if(rx2_pointer == LORA_cntPre)				//�����һ�ε�ֵ�������ͬ����˵���������
-	{
-		rx2_pointer = 0;							//��0���ռ���
-		return REV_OK;								//���ؽ�����ɱ�־
-	}
-	LORA_cntPre = rx2_pointer;					//��Ϊ��ͬ
-	return REV_WAIT;								//���ؽ���δ��ɱ�־
+    uint8_t response[sizeof(Rx2Buffer) + 1U];
+    uint8_t length;
+    uint32_t primask;
+
+    if ((expected == NULL) || (expected[0] == '\0'))
+    {
+        return 1U;
+    }
+
+    primask = __get_PRIMASK();
+    __disable_irq();
+    length = rx2_pointer;
+    if (length > sizeof(Rx2Buffer))
+    {
+        length = sizeof(Rx2Buffer);
+    }
+    if (length != 0U)
+    {
+        memcpy(response, (const void *)Rx2Buffer, length);
+    }
+    response[length] = '\0';
+    if (primask == 0U)
+    {
+        __enable_irq();
+    }
+
+    return (strstr((const char *)response, expected) != NULL) ? 1U : 0U;
 }
 
-
-/*****************************************************
-  * �������ƣ�	LORA_SendCmd
-  * �������ܣ�	��������
-  * ��ڲ�����	cmd������
-                res����Ҫ���ķ���ָ��
-  * ���ز�����	0-�ɹ�	1-ʧ��
-  * ˵����		
-*****************************************************/
-_Bool LORA_SendCmd(char *cmd, char *res)
+/**
+ ******************************************************************************
+  @功能：有限次数发送一条 WH-L101-L AT 参数命令并等待指定回显。
+  @日期：2026-08-21
+  @参数：[输入] command - 以 CRLF 结尾的 AT 命令
+          [输入] expected - 期望回显；空字符串表示仅发送后短暂等待
+  @返回值：uint8_t - 1 表示收到期望回显或无需回显，0 表示三次内失败
+  @使用说明：仅初始化阶段调用；失败只记录诊断，不能无限阻塞从机启动。
+ ******************************************************************************
+ */
+static uint8_t LORA_SendAtCommand(const char *command, const char *expected)
 {
-	unsigned char timeOut = 200;
+    uint8_t attempt;
+    uint32_t started_at;
 
-	Usart_SendString(huart2, (unsigned char *)cmd, strlen((const char *)cmd));
-	
-	while(timeOut--)
-	{
-		if(LORA_WaitRecive() == REV_OK)							//����յ�����
-		{
-			if(strstr((const char *)Rx2Buffer, res) != NULL)		//����������ؼ���
-			{
-				LORA_Clear();									//��ջ���
-				
-				return 0;
-			}
-		}
-		
-		HAL_Delay(10);
-	}
-	
-	return 1;
+    if (command == NULL)
+    {
+        return 0U;
+    }
+
+    for (attempt = 0U; attempt < LORA_AT_RETRY_COUNT; attempt++)
+    {
+        LORA_Clear();
+        if (HAL_UART_Transmit(&huart2, (uint8_t *)command,
+                              (uint16_t)strlen(command), 100U) != HAL_OK)
+        {
+            continue;
+        }
+
+        if ((expected == NULL) || (expected[0] == '\0'))
+        {
+            HAL_Delay(50U);
+            return 1U;
+        }
+
+        started_at = HAL_GetTick();
+        while ((uint32_t)(HAL_GetTick() - started_at) < LORA_AT_REPLY_TIMEOUT_MS)
+        {
+            if (LORA_ConfigContains(expected) != 0U)
+            {
+                return 1U;
+            }
+            HAL_Delay(10U);
+        }
+    }
+
+    LoraSlaveConfigErrorCount++;
+    return 0U;
 }
 
-
-/*****************************************************
-  * �������ƣ�	LORA_SendData
-  * �������ܣ�	��������
-  * ��ڲ�����	data������
-                len������
-  * ���ز�����	��
-  * ˵����		
-*****************************************************/
-void LORA_SendData(unsigned char *data, unsigned short len)
+/**
+ ******************************************************************************
+  @功能：向 LoRa 模块串口发送一帧完整应用层二进制报文。
+  @日期：2026-08-21
+  @参数：[输入] data - 完整协议帧缓存
+          [输入] len - 协议帧长度，范围 1~109 字节
+  @返回值：uint8_t - 1 表示 UART 已发送完成，0 表示参数或 UART 发送失败
+  @使用说明：调用方在失败后最多重试有限次数；data 在函数返回前不得被改写。
+ ******************************************************************************
+ */
+uint8_t LORA_SendData(const uint8_t *data, uint16_t len)
 {
-	LORA_Clear();								//��ս��ջ���
-  
-  Usart_SendString(huart2, data, len);		//�����豸������������
+    if ((data == NULL) || (len == 0U) || (len > 109U))
+    {
+        LoraSlaveTxErrorCount++;
+        return 0U;
+    }
+
+    if (HAL_UART_Transmit(&huart2, (uint8_t *)data, len,
+                          LORA_APP_TX_TIMEOUT_MS) != HAL_OK)
+    {
+        LoraSlaveTxErrorCount++;
+        return 0U;
+    }
+    return 1U;
 }
 
-
-/*****************************************************
-  * �������ƣ�	LORA_Init
-  * �������ܣ�	����LORA����
-  * ��ڲ�����	��
-  * ���ز�����	��
-  * ˵����		
-*****************************************************/
+/**
+ ******************************************************************************
+  @功能：将 WH-L101-L 配置为本项目统一的 NODE 透明传输参数。
+  @日期：2026-08-21
+  @参数：无
+  @返回值：无
+  @使用说明：配置失败不会阻止已有正确参数的模块进入业务运行态；失败次数由
+             LoraSlaveConfigErrorCount 提供现场诊断。
+ ******************************************************************************
+ */
 void LORA_Init(void)
 {
-	LORA_Clear();       // ������� 2 ��������
-  
-#if 1   // ���õ�Ե�͸��ͨѶ������������һ�Σ�����ģ�������Ч�������ݼ��ɣ��͹���ģʽ��˵
-  
-	LORA_SendCmd("AT+ENTM\r\n", "");      // �˳�����ģʽ�����½�������ģʽ������Ῠס����Ϊ������ģʽ�в����Ӧ�������õ�������º�������ס
+    static const char * const commands[] =
+    {
+        "AT+LORAPROT=NODE\r\n", "AT+WMODE=TRANS\r\n", "AT+ITM=20\r\n",
+        "AT+WTM=2000\r\n", "AT+RTO=500\r\n", "AT+FDMODE=OFF\r\n",
+        "AT+CH=4700\r\n", "AT+SPD=10\r\n", "AT+PWR=22\r\n",
+        "AT+FEC=1\r\n", "AT+LBT=OFF\r\n", "AT+ADDR=0\r\n",
+        "AT+LRTO=3\r\n", "AT+UARTFT=10\r\n", "AT+MTU=128\r\n",
+        "AT+UART=115200,8,1,NONE,NFC\r\n", "AT+PMODE=RUN\r\n"
+    };
+    uint8_t index;
+    uint8_t entered_config_mode = 1U;
+    uint8_t local_group;
 
-	while(LORA_SendCmd("+++", "a"))       // �����������ģʽ "+++"�����ظ��ж���"a"
-    HAL_Delay(50);
-	
-  while(LORA_SendCmd("a", "OK"))        // �����������ģʽ "a"�����ظ��ж���"OK"
-    HAL_Delay(50);	
+    LORA_Clear();
+    /* 先退出可能残留的参数态，再按模块握手重新进入。 */
+    (void)LORA_SendAtCommand("AT+ENTM\r\n", "");
+    if (LORA_SendAtCommand("+++", "a") == 0U)
+    {
+        entered_config_mode = 0U;
+    }
+    if ((entered_config_mode != 0U) &&
+        (LORA_SendAtCommand("a", "OK") == 0U))
+    {
+        entered_config_mode = 0U;
+    }
 
-  while(LORA_SendCmd("AT+WMODE=TRANS\r\n", "OK"))        // Э������Ϊ͸��ģʽ �����ظ��ж���"OK"
-    HAL_Delay(50);	
-  
-  while(LORA_SendCmd("AT+PMODE=RUN\r\n", "OK"))        // ����ģʽ����Ϊ ��RUN�� �����ظ��ж���"OK"
-    HAL_Delay(50);	
-  
-  while(LORA_SendCmd("AT+ITM=20\r\n", "OK"))        // ����ʱ������Ϊ 20��s�� �����ظ��ж���"OK"���˲����� RUN��LSR ģʽ��Ч
-    HAL_Delay(50);	
-  
-  while(LORA_SendCmd("AT+WTM=2000\r\n", "OK"))        // ����ʱ�䣺2000��ms�� �����ظ��ж���"OK"���˲����� RUN��LSR ģʽ��Ч
-    HAL_Delay(50);	
-  
-  while(LORA_SendCmd("AT+RTO=500\r\n", "OK"))        // ���ճ�ʱ��500��ms�� �����ظ��ж���"OK"������ LR/LSR ģʽ����Ч
-    HAL_Delay(50);	
-  
-  while(LORA_SendCmd("AT+FDMODE=OFF\r\n", "OK"))        // �ر������з�Ƶ �����ظ��ж���"OK"
-    HAL_Delay(50);	
-  
-  while(LORA_SendCmd("AT+CH=4700\r\n", "OK"))        // ����/�����ŵ�����Ϊ��4700 �����ظ��ж���"OK"������Ƶ�Σ�(398+ch)MHz
-    HAL_Delay(50);	
-  
-  while(LORA_SendCmd("AT+SPD=10\r\n", "OK"))        // ���ʣ�10 �����ظ��ж���"OK"��10: 21875bps
-    HAL_Delay(50);	
-  
-  while(LORA_SendCmd("AT+PWR=22\r\n", "OK"))        // ���书�ʣ�22 �����ظ��ж���"OK"
-    HAL_Delay(50);	
-  
-  while(LORA_SendCmd("AT+FEC=1\r\n", "OK"))        // ǰ��������ر� �����ظ��ж���"OK"�����������ݴ�������ȶ�������ͨ������
-    HAL_Delay(50);	
-  
-  while(LORA_SendCmd("AT+LBT=OFF\r\n", "OK"))        // LBT���ر� �����ظ��ж���"OK"�������� LoRa ����ǰ�����ŵ�״̬
-    HAL_Delay(50);	
-  
-  char cmd_addr[16];
-  sprintf(cmd_addr, "AT+ADDR=%d\r\n", DIP_Switch_Read());
-  while(LORA_SendCmd(cmd_addr, "OK"))        // Ŀ���ַ��88 �����ظ��ж���"OK"
-    HAL_Delay(50);	
-  
-  while(LORA_SendCmd("AT+LRTO=3\r\n", "OK"))        // ��ʱ�ش�ʱ�䣺3s �����ظ��ж���"OK"
-    HAL_Delay(50);	
-  
-  while(LORA_SendCmd("AT+UARTFT=10\r\n", "OK"))        // �����ֽڼ����10��ms�� �����ظ��ж���"OK"
-    HAL_Delay(50); 
+    if (entered_config_mode != 0U)
+    {
+        for (index = 0U; index < (uint8_t)(sizeof(commands) / sizeof(commands[0])); index++)
+        {
+            (void)LORA_SendAtCommand(commands[index], "OK");
+        }
+        (void)LORA_SendAtCommand("AT+Z\r\n", "Start");
+    }
 
-  while(LORA_SendCmd("AT+MTU=128\r\n", "OK"))          // 36点温度帧85字节，统一使用128字节包长
-    HAL_Delay(50);
-  
-  while(LORA_SendCmd("AT+UART=115200,8,1,NONE,NFC\r\n", "OK"))        // ���ڲ������ã�����-NFC �����ظ��ж���"OK"
-    HAL_Delay(50);	
-  
-  while(LORA_SendCmd("AT+Z\r\n", "Start"))        // ����ģ�飬ָ����Ч �����ظ���Ϣ��"LoRa Start!"
-    HAL_Delay(50);	
-  
-#endif
-
-  /* 配置阶段仍用旧缓冲等待 AT 响应；从这里起切换到二进制协议接收环。 */
-  SlaveRuntime_Init(DIP_Switch_Read());
+    /* 拨码非法时 SlaveRuntime 保持非业务态，不会伪造任意组号回复。 */
+    local_group = DIP_Switch_Read();
+    SlaveRuntime_Init(local_group);
+    if (LoraSlaveConfigErrorCount != 0U)
+    {
+        printf("[LORA] config errors:%lu\r\n", (unsigned long)LoraSlaveConfigErrorCount);
+    }
+    if (SlaveRuntime_IsApplicationMode() == 0U)
+    {
+        printf("[LORA] invalid slave group:%u\r\n", (unsigned int)local_group);
+    }
 }
 
-/*****************************************************
-  * �������ƣ�	LoraP2PTrans
-  * �������ܣ�	Lora��Ե�͸����������
-  * ��ڲ�����	��
-  * ���ز�����	��
-  * ˵����		
-*****************************************************/
+/**
+ ******************************************************************************
+  @功能：在主循环中处理 LoRa 收发状态机。
+  @日期：2026-08-21
+  @参数：无
+  @返回值：无
+  @使用说明：不得在 USART2 中断中调用。
+ ******************************************************************************
+ */
 void LoraP2PTrans(void)
 {
-  SlaveRuntime_Process(HAL_GetTick());
+    SlaveRuntime_Process(HAL_GetTick());
 }
-
-
-
-
-
-
-

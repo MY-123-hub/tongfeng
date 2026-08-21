@@ -6,6 +6,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $appDir = Join-Path $repoRoot "LoraMaster_TD710\App"
 $bspDir = Join-Path $repoRoot "LoraMaster_TD710\Bsp"
+$slaveAppDir = Join-Path $repoRoot "LoraSlave.switch match\App"
 $fakeDir = Join-Path $PSScriptRoot "fakes"
 $outputDir = Join-Path $env:TEMP "lora_master_host_tests"
 
@@ -16,6 +17,14 @@ if (-not (Test-Path -LiteralPath $Gcc)) {
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 
 $tests = @(
+    @{
+        Name = "slave_protocol_runtime"
+        Includes = @($fakeDir)
+        Sources = @(
+            (Join-Path $slaveAppDir "slave_protocol_runtime.c"),
+            (Join-Path $PSScriptRoot "test_slave_protocol_runtime.c")
+        )
+    },
     @{
         Name = "lora_protocol"
         Sources = @(
@@ -166,10 +175,12 @@ foreach ($optimization in @("O0", "O2")) {
             "-Wpedantic",
             "-Wconversion",
             "-Wsign-conversion",
-            "-Wshadow",
+            "-Wshadow"
+        ) + $extraIncludes + @(
             "-I", $appDir,
-            "-I", $bspDir
-        ) + $extraIncludes + $test.Sources + @("-o", $exePath)
+            "-I", $bspDir,
+            "-I", $slaveAppDir
+        ) + $test.Sources + @("-o", $exePath)
 
         & $Gcc @arguments
         if ($LASTEXITCODE -ne 0) {
