@@ -5,6 +5,7 @@
 - `LoraMasterV1.1/`: master firmware: LoRa receive, DGUS display, and Modbus fan control.
 - `LoraSlave/`: slave firmware: DS18B20 sampling and LoRa telemetry transmission.
 - `protocol/`: shared protocol definitions. Update this first when either endpoint changes its data frame.
+- `上位机/`: active PC application. Keep its Python source, executable release, and Python-only tests together here; do not mix STM32 firmware files into this directory.
 
 ## Development rules
 

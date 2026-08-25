@@ -20,6 +20,14 @@ class UpperProtocolTests(unittest.TestCase):
             'AA 55 01 10 01 00 02 01 64 00 02 88 13 DB C9',
         )
 
+    def test_set_frequency_10hz_uses_x100_little_endian(self):
+        frame = LoRaProtocol.cmd_set_freq(1, 100, 10.00)
+        self.assertEqual(frame[11:13], bytes((0xE8, 0x03)))
+        self.assertEqual(
+            frame.hex(' ').upper(),
+            'AA 55 01 10 01 00 02 01 64 00 02 E8 03 F2 05',
+        )
+
     def test_target_temperature_is_signed_x10(self):
         self.assertEqual(
             LoRaProtocol.cmd_set_target_temp(1, 100, 26.0)[11:13], bytes((0x04, 0x01)))
@@ -82,6 +90,21 @@ class UpperProtocolTests(unittest.TestCase):
         receiver._buffer.extend(frame[7:])
         receiver._process_buffer()
         self.assertEqual(received, [frame])
+
+    def test_command_flow_ids_do_not_enter_gateway_poll_range(self):
+        manager = SerialManager()
+        manager._flow_id = 0x7FFF
+        self.assertEqual(manager.next_flow_id(), 1)
+        self.assertLess(manager.next_flow_id(), 0x8000)
+
+    def test_gateway_local_error_is_accepted(self):
+        frame = LoRaProtocol.build_packet(LoRaProtocol.MSG_ERROR,
+                                          LoRaProtocol.ROLE_CONTROL, 0,
+                                          LoRaProtocol.ROLE_HOST, 2,
+                                          101, bytes((0x02,)))
+        parsed = LoRaProtocol.parse_packet(frame)
+        self.assertTrue(LoRaProtocol.validate_control_room_response(parsed))
+        self.assertEqual(LoRaProtocol.decode_error(parsed['data'])['code'], 0x02)
 
 
 if __name__ == '__main__':

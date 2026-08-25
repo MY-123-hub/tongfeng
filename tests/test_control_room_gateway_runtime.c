@@ -4,9 +4,9 @@
 #include <stdint.h>
 #include <string.h>
 
-static uint8_t g_ports[8];
-static uint8_t g_frames[8][109];
-static uint16_t g_lengths[8];
+static uint8_t g_ports[32];
+static uint8_t g_frames[32][109];
+static uint16_t g_lengths[32];
 static uint8_t g_count;
 
 static uint16_t Test_Crc16(const uint8_t *data, uint16_t length)
@@ -60,7 +60,7 @@ static uint8_t Test_Send(GatewayOutputPort port, const uint8_t *frame,
                          uint16_t frame_length, void *context)
 {
     (void)context;
-    assert(g_count < 8U);
+    assert(g_count < 32U);
     g_ports[g_count] = (uint8_t)port;
     g_lengths[g_count] = frame_length;
     memcpy(g_frames[g_count], frame, frame_length);
@@ -92,6 +92,7 @@ int main(void)
     uint8_t temperatures[72] = {0};
     uint8_t frequency[2] = {0x88U, 0x13U};
     uint8_t ack[2] = {0x00U, 0x00U};
+    uint8_t rejected_ack[2] = {0x02U, 0x01U};
     uint8_t result[7] = {0};
     uint16_t length;
 
@@ -134,5 +135,58 @@ int main(void)
     Test_FeedLoRa(frame, length);
     GatewayRuntime_Process(5U);
     assert(g_count == 5U);
+
+    /* 当前单组阶段，发给M2的命令不进空口，并立即返回本地ERROR=02。 */
+    length = Test_BuildFrame(frame, 0x10U, 0x01U, 0x00U, 0x02U, 0x02U,
+                             101U, frequency, sizeof(frequency));
+    Test_FeedPc(frame, length);
+    GatewayRuntime_Process(6U);
+    assert((g_count == 6U) && (g_ports[5] == GATEWAY_OUTPUT_PC));
+    assert((g_frames[5][3] == 0x7EU) && (g_frames[5][7] == 0x02U));
+    assert((g_frames[5][8] == 101U) && (g_frames[5][11] == 0x02U));
+
+    /* 当前单组阶段，下一次自动轮询仍然只能发给M1。 */
+    GatewayRuntime_Process(1000U);
+    assert((g_count == 7U) && (g_ports[6] == GATEWAY_OUTPUT_LORA));
+    assert((g_frames[6][3] == 0x01U) && (g_frames[6][7] == 0x01U));
+
+    /* 完成自动轮询后验证拒绝ACK会立即结束事务，不再等待6秒超时。 */
+    length = Test_BuildFrame(frame, 0x02U, 0x02U, 0x01U, 0x01U, 0x00U,
+                             0x8001U, temperatures, sizeof(temperatures));
+    Test_FeedLoRa(frame, length);
+    GatewayRuntime_Process(1001U);
+    assert((g_count == 8U) && (g_ports[7] == GATEWAY_OUTPUT_PC));
+
+    length = Test_BuildFrame(frame, 0x10U, 0x01U, 0x00U, 0x02U, 0x01U,
+                             102U, frequency, sizeof(frequency));
+    Test_FeedPc(frame, length);
+    GatewayRuntime_Process(1002U);
+    assert((g_count == 9U) && (g_ports[8] == GATEWAY_OUTPUT_LORA));
+
+    length = Test_BuildFrame(frame, 0x20U, 0x02U, 0x01U, 0x01U, 0x00U,
+                             102U, rejected_ack, sizeof(rejected_ack));
+    Test_FeedLoRa(frame, length);
+    GatewayRuntime_Process(1003U);
+    assert((g_count == 10U) && (g_ports[9] == GATEWAY_OUTPUT_PC));
+    assert((g_frames[9][3] == 0x20U) && (g_frames[9][11] == 0x02U));
+    GatewayRuntime_Process(7003U);
+    assert((g_count == 11U) && (g_ports[10] == GATEWAY_OUTPUT_LORA));
+    assert(g_frames[10][3] == 0x01U);
+
+    /* 自动轮询占用事务时最多排队4条，第5条必须返回ERROR=03。 */
+    g_count = 0U;
+    GatewayRuntime_Init(Test_Send, NULL);
+    GatewayRuntime_Process(0U);
+    assert(g_count == 1U);
+    for (uint16_t flow_id = 200U; flow_id < 205U; flow_id++)
+    {
+        length = Test_BuildFrame(frame, 0x10U, 0x01U, 0x00U, 0x02U, 0x01U,
+                                 flow_id, frequency, sizeof(frequency));
+        Test_FeedPc(frame, length);
+    }
+    GatewayRuntime_Process(1U);
+    assert((g_count == 2U) && (g_ports[1] == GATEWAY_OUTPUT_PC));
+    assert((g_frames[1][3] == 0x7EU) && (g_frames[1][11] == 0x03U));
+    assert((g_frames[1][8] == 204U) && (g_frames[1][9] == 0U));
     return 0;
 }

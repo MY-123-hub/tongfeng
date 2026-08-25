@@ -108,7 +108,7 @@ int main(void)
 
   led1_off();
   led2_off();
-  LORA_Init();      /* 配置为控制室地址 0、MTU 128 后启动协议网关。 */
+  LORA_Init();      /* 配置为现场统一地址88、MTU 128后启动协议网关。 */
   /* USER CODE END 2 */
 
   /* Call init function for freertos objects (in cmsis_os2.c) */

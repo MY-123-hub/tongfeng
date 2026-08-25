@@ -1,0 +1,31 @@
+# ---------- Keil MDK-ARM 编译产物（不入库） ----------
+*.o
+*.d
+*.crf
+*.lnp
+*.axf
+*.elf
+*.hex
+*.bin
+*.htm
+*.dep
+*.iex
+*.build_log.htm
+*.map
+*.lst
+*.ini
+
+# 编译输出目录
+Objects/
+Listings/
+
+# ---------- Keil 用户级工作区状态 ----------
+*.uvguix.*
+
+# ---------- STM32CubeMX ----------
+.mxproject
+
+# ---------- 系统垃圾文件 ----------
+Thumbs.db
+Desktop.ini
+.DS_Store

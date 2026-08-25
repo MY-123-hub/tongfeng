@@ -67,6 +67,21 @@ static LoRaMessage MakeTemperature(uint8_t group, uint16_t flow_id)
     return message;
 }
 
+static LoRaMessage MakeControl(uint8_t type, uint16_t flow_id)
+{
+    LoRaMessage message;
+
+    memset(&message, 0, sizeof(message));
+    message.version = LORA_PROTOCOL_VERSION;
+    message.type = type;
+    message.source_role = LORA_ROLE_CONTROL_ROOM;
+    message.source_group = 0U;
+    message.destination_role = LORA_ROLE_MASTER;
+    message.destination_group = 1U;
+    message.flow_id = flow_id;
+    return message;
+}
+
 static void SetAllTemperatures(LoRaMessage *message, int16_t value)
 {
     uint16_t raw = (uint16_t)value;
@@ -107,10 +122,17 @@ static void PushMessage(const LoRaMessage *message)
 
 static void ResetRuntime(uint8_t group)
 {
+    VfdJob boot_stop;
+
     CHECK(MasterQueues_Init() == 1U);
     FakeParameterStore_Reset();
     MasterIdentity_Init(group);
     MasterRuntime_Init();
+    MasterRuntime_ProcessOne(0U, 0U);
+    CHECK(MasterQueues_ReceiveVfdJob(&boot_stop, 0U) == pdPASS);
+    CHECK(boot_stop.origin == VFD_JOB_ORIGIN_SAFETY_STOP);
+    PushVfdResult(&boot_stop, VFD_RESULT_OK);
+    MasterRuntime_ProcessOne(0U, 0U);
 }
 
 static void TestStandardFlowAndCache(void)
@@ -262,6 +284,15 @@ static void TestAutomaticControlIntegration(void)
 
     ResetRuntime(1U);
 
+    input = MakeControl(LORA_MSG_SET_AUTO, 899U);
+    PushMessage(&input);
+    MasterRuntime_ProcessOne(0U, 0U);
+    CHECK(MasterQueues_ReceiveLoRa(&output, 0U) == pdPASS);
+    CHECK(output.type == LORA_MSG_ACK);
+    CHECK(MasterQueues_ReceiveLoRa(&output, 0U) == pdPASS);
+    CHECK(output.type == LORA_MSG_RESULT);
+    CHECK(output.payload[1] == MASTER_CONTROL_MODE_AUTO);
+
     input = MakeRead(1U, 900U, 1U);
     PushMessage(&input);
     MasterRuntime_ProcessOne(100U, 0U);
@@ -339,6 +370,36 @@ static void TestPowerOnManualStopRestore(void)
     CHECK(snapshot.target_temperature_x10 == 275);
 }
 
+static void TestPowerOnManualRunIsForcedToStop(void)
+{
+    MasterParameters parameters;
+    MasterUiSnapshot snapshot;
+    VfdJob job;
+
+    CHECK(MasterQueues_Init() == 1U);
+    FakeParameterStore_Reset();
+    parameters.frequency_x100 = 3800U;
+    parameters.target_temperature_x10 = 265;
+    parameters.control_mode = MASTER_CONTROL_MODE_MANUAL_RUN;
+    FakeParameterStore_SetLoad(PARAMETER_STORE_LOADED, &parameters);
+    MasterIdentity_Init(1U);
+    MasterRuntime_Init();
+    MasterRuntime_ProcessOne(0U, 0U);
+
+    CHECK(MasterQueues_ReceiveVfdJob(&job, 0U) == pdPASS);
+    CHECK(job.origin == VFD_JOB_ORIGIN_SAFETY_STOP);
+    CHECK(job.action == VFD_ACTION_STOP_DECELERATE);
+    CHECK(MasterQueues_PeekUi(&snapshot) == pdPASS);
+    CHECK(snapshot.control_mode == MASTER_CONTROL_MODE_MANUAL_STOP);
+    CHECK(snapshot.frequency_x100 == 3800U);
+    CHECK(FakeParameterStore_GetSaveCount() == 0U);
+
+    MasterRuntime_ProcessOne(3000U, 0U);
+    CHECK(FakeParameterStore_GetSaveCount() == 1U);
+    CHECK(FakeParameterStore_GetLastSaved()->control_mode ==
+          MASTER_CONTROL_MODE_MANUAL_STOP);
+}
+
 int main(void)
 {
     TestStandardFlowAndCache();
@@ -347,6 +408,7 @@ int main(void)
     TestInvalidIdentity();
     TestAutomaticControlIntegration();
     TestPowerOnManualStopRestore();
+    TestPowerOnManualRunIsForcedToStop();
     printf("master_runtime: %lu checks passed\n", (unsigned long)g_checks);
     return 0;
 }

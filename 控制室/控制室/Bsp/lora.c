@@ -10,6 +10,7 @@
 #define LORA_CONFIG_RETRY_COUNT        (3U)
 #define LORA_CONFIG_REPLY_TIMEOUT_MS   (600U)
 #define LORA_APP_TX_TIMEOUT_MS         (30U)
+#define LORA_TURNAROUND_DELAY_MS       (50UL)
 
 volatile uint32_t LoraControlLoraTxCount;
 volatile uint32_t LoraControlLoraTxErrorCount;
@@ -22,6 +23,7 @@ static volatile uint8_t s_application_ready;
 static volatile uint8_t s_config_rx[LORA_CONFIG_RX_SIZE];
 static volatile uint16_t s_config_rx_length;
 static volatile uint8_t s_config_rx_overflow;
+static volatile uint32_t s_lora_last_rx_tick;
 
 static void LoraControl_ClearConfigResponse(void)
 {
@@ -122,6 +124,14 @@ static uint8_t LoraControl_SendFrame(GatewayOutputPort port,
         return 0U;
     }
 
+    if ((port == GATEWAY_OUTPUT_LORA) &&
+        ((uint32_t)(HAL_GetTick() - s_lora_last_rx_tick) <
+         LORA_TURNAROUND_DELAY_MS))
+    {
+        /* 正常的半双工等待，不计作UART发送错误；网关状态机会在下个周期重试。 */
+        return 0U;
+    }
+
     uart = (port == GATEWAY_OUTPUT_LORA) ? &huart2 : &huart1;
     status = HAL_UART_Transmit(uart, (uint8_t *)frame, frame_length,
                                LORA_APP_TX_TIMEOUT_MS);
@@ -171,6 +181,7 @@ void LoraControl_OnLoraUartByteFromIsr(uint8_t byte)
 
     if (s_application_ready != 0U)
     {
+        s_lora_last_rx_tick = HAL_GetTick();
         GatewayRuntime_PushLoRaByteFromIsr(byte);
     }
 }
@@ -201,7 +212,8 @@ void LORA_Init(void)
         "AT+LORAPROT=NODE\r\n", "AT+WMODE=TRANS\r\n", "AT+ITM=20\r\n",
         "AT+WTM=2000\r\n", "AT+RTO=500\r\n", "AT+FDMODE=OFF\r\n",
         "AT+CH=4700\r\n", "AT+SPD=10\r\n", "AT+PWR=22\r\n",
-        "AT+FEC=1\r\n", "AT+LBT=OFF\r\n", "AT+ADDR=0\r\n",
+        /* 当前现场主机、从机均使用地址 88；控制室必须保持相同地址。 */
+        "AT+FEC=1\r\n", "AT+LBT=OFF\r\n", "AT+ADDR=88\r\n",
         "AT+LRTO=3\r\n", "AT+UARTFT=10\r\n", "AT+MTU=128\r\n",
         "AT+UART=115200,8,1,NONE,NFC\r\n", "AT+PMODE=RUN\r\n"
     };
@@ -247,6 +259,7 @@ void LORA_Init(void)
      */
     (void)configured;
     GatewayRuntime_Init(LoraControl_SendFrame, NULL);
+    s_lora_last_rx_tick = HAL_GetTick() - LORA_TURNAROUND_DELAY_MS;
     s_lora_config_mode = 0U;
     s_application_ready = 1U;
 }

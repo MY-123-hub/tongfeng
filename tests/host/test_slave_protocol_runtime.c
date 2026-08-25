@@ -37,7 +37,7 @@ static uint16_t crc16(const uint8_t *data, uint16_t length)
     return crc;
 }
 
-static void push_frame(const uint8_t *frame, uint8_t length)
+static void push_frame(const uint8_t *frame, uint8_t length, uint32_t now_ms)
 {
     uint8_t index;
 
@@ -45,11 +45,12 @@ static void push_frame(const uint8_t *frame, uint8_t length)
     {
         SlaveRuntime_PushRxByteFromIsr(frame[index]);
     }
-    SlaveRuntime_Process(0U);
+    SlaveRuntime_Process(now_ms);
 }
 
 static void send_read_temp(uint8_t source_role, uint8_t source_group,
-                           uint8_t destination_group, uint16_t flow_id)
+                           uint8_t destination_group, uint16_t flow_id,
+                           uint32_t now_ms)
 {
     uint8_t frame[14] =
     {
@@ -61,7 +62,7 @@ static void send_read_temp(uint8_t source_role, uint8_t source_group,
 
     frame[12] = (uint8_t)(frame_crc & 0xFFU);
     frame[13] = (uint8_t)(frame_crc >> 8U);
-    push_frame(frame, (uint8_t)sizeof(frame));
+    push_frame(frame, (uint8_t)sizeof(frame), now_ms);
 }
 
 static void test_temp36_encoding_and_duplicate(void)
@@ -70,14 +71,16 @@ static void test_temp36_encoding_and_duplicate(void)
     uint16_t flow_id;
 
     SlaveRuntime_Init(1U);
-    send_read_temp(0x02U, 1U, 1U, 100U);
+    send_read_temp(0x02U, 1U, 1U, 100U, 0U);
     assert(SlaveRuntime_TakeSampleRequest(&flow_id) == 1U);
     assert(flow_id == 100U);
 
     temperatures[0] = 250;
     temperatures[1] = -55;
     SlaveRuntime_CompleteSample(flow_id, temperatures);
-    SlaveRuntime_Process(1U);
+    SlaveRuntime_Process(49U);
+    assert(g_tx_count == 0U);
+    SlaveRuntime_Process(50U);
 
     assert(g_tx_count == 1U);
     assert(g_tx_length == 85U);
@@ -90,8 +93,10 @@ static void test_temp36_encoding_and_duplicate(void)
     assert(crc16(&g_tx_frame[2], 81U) ==
            (uint16_t)((uint16_t)g_tx_frame[83] | ((uint16_t)g_tx_frame[84] << 8U)));
 
-    send_read_temp(0x02U, 1U, 1U, 100U);
-    SlaveRuntime_Process(2U);
+    send_read_temp(0x02U, 1U, 1U, 100U, 100U);
+    SlaveRuntime_Process(149U);
+    assert(g_tx_count == 1U);
+    SlaveRuntime_Process(150U);
     assert(g_tx_count == 2U);
     assert(SlaveRuntimeDiag.duplicate_request_count == 1U);
 }
@@ -101,7 +106,7 @@ static void test_wrong_group_is_silent(void)
     uint16_t flow_id = 0U;
 
     SlaveRuntime_Init(1U);
-    send_read_temp(0x02U, 2U, 1U, 101U);
+    send_read_temp(0x02U, 2U, 1U, 101U, 0U);
     assert(SlaveRuntime_TakeSampleRequest(&flow_id) == 0U);
     assert(SlaveRuntimeDiag.ignored_message_count == 1U);
 }
@@ -124,18 +129,18 @@ static void test_invalid_frames_are_silent(void)
     uint16_t flow_id = 0U;
 
     SlaveRuntime_Init(1U);
-    push_frame(bad_crc, (uint8_t)sizeof(bad_crc));
+    push_frame(bad_crc, (uint8_t)sizeof(bad_crc), 0U);
     assert(SlaveRuntime_TakeSampleRequest(&flow_id) == 0U);
     assert(SlaveRuntimeDiag.invalid_frame_count == 1U);
 
     frame_crc = crc16(&bad_length[2], 9U);
     bad_length[11] = (uint8_t)(frame_crc & 0xFFU);
     bad_length[12] = (uint8_t)(frame_crc >> 8U);
-    push_frame(bad_length, (uint8_t)sizeof(bad_length));
+    push_frame(bad_length, (uint8_t)sizeof(bad_length), 1U);
     assert(SlaveRuntime_TakeSampleRequest(&flow_id) == 0U);
     assert(SlaveRuntimeDiag.ignored_message_count == 1U);
 
-    send_read_temp(0x01U, 1U, 1U, 102U);
+    send_read_temp(0x01U, 1U, 1U, 102U, 2U);
     assert(SlaveRuntime_TakeSampleRequest(&flow_id) == 0U);
     assert(SlaveRuntimeDiag.ignored_message_count == 2U);
 }
@@ -147,10 +152,10 @@ static void test_all_invalid_snapshot(void)
     uint8_t index;
 
     SlaveRuntime_Init(1U);
-    send_read_temp(0x02U, 1U, 1U, 103U);
+    send_read_temp(0x02U, 1U, 1U, 103U, 0U);
     assert(SlaveRuntime_TakeSampleRequest(&flow_id) == 1U);
     SlaveRuntime_CompleteSample(flow_id, temperatures);
-    SlaveRuntime_Process(0U);
+    SlaveRuntime_Process(50U);
 
     assert(g_tx_length == 85U);
     for (index = 11U; index < 83U; index++)

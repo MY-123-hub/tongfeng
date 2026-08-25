@@ -13,6 +13,7 @@
 
 #define GATEWAY_ROLE_CONTROL_ROOM       (0x01U)
 #define GATEWAY_ROLE_MASTER             (0x02U)
+#define GATEWAY_ACTIVE_GROUP            (0x01U)
 
 #define GATEWAY_TYPE_READ_TEMP          (0x01U)
 #define GATEWAY_TYPE_TEMP_36            (0x02U)
@@ -25,6 +26,9 @@
 #define GATEWAY_TYPE_ACK                (0x20U)
 #define GATEWAY_TYPE_RESULT             (0x21U)
 #define GATEWAY_TYPE_ERROR              (0x7EU)
+#define GATEWAY_ACK_REJECTED            (0x02U)
+#define GATEWAY_ERROR_STATE_NOT_ALLOWED (0x02U)
+#define GATEWAY_ERROR_BUSY              (0x03U)
 #define GATEWAY_ERROR_MASTER_TIMEOUT    (0x0AU)
 
 /* 当前轮询节奏和主机从机超时相匹配，集中定义，禁止散落魔数。 */
@@ -87,7 +91,6 @@ static uint8_t g_pc_queue_head;
 static uint8_t g_pc_queue_tail;
 static uint8_t g_pc_queue_count;
 static GatewayPending g_pending;
-static uint8_t g_next_poll_group;
 static uint16_t g_next_auto_flow;
 static uint32_t g_next_poll_tick;
 static GatewaySendCallback g_send_callback;
@@ -119,7 +122,8 @@ static uint16_t Gateway_Crc16(const uint8_t *data, uint16_t length)
 
 static uint8_t Gateway_IsValidGroup(uint8_t group)
 {
-    return ((group >= 1U) && (group <= 4U)) ? 1U : 0U;
+    /* 当前单套固件联调只开放M1；拨码和多组轮询最后再恢复。 */
+    return (group == GATEWAY_ACTIVE_GROUP) ? 1U : 0U;
 }
 
 static uint8_t Gateway_IsValidPayload(const GatewayMessage *message)
@@ -294,8 +298,8 @@ static uint8_t Gateway_ParseByte(GatewayParser *parser, uint8_t byte,
 static uint8_t Gateway_IsPcCommand(const GatewayMessage *message)
 {
     if ((message == NULL) || (message->source_role != GATEWAY_ROLE_CONTROL_ROOM) ||
-        (message->source_group != 0U) || (message->destination_role != GATEWAY_ROLE_MASTER) ||
-        (Gateway_IsValidGroup(message->destination_group) == 0U))
+        (message->source_group != 0U) ||
+        (message->destination_role != GATEWAY_ROLE_MASTER))
     {
         return 0U;
     }
@@ -351,6 +355,28 @@ static uint8_t Gateway_EncodeAndSend(const GatewayMessage *message,
     return g_send_callback(port, frame, length, g_send_context);
 }
 
+static void Gateway_SendLocalError(const GatewayMessage *request,
+                                   uint8_t error_code)
+{
+    GatewayMessage error;
+
+    if (request == NULL)
+    {
+        return;
+    }
+
+    (void)memset(&error, 0, sizeof(error));
+    error.type = GATEWAY_TYPE_ERROR;
+    error.source_role = GATEWAY_ROLE_CONTROL_ROOM;
+    error.source_group = 0U;
+    error.destination_role = GATEWAY_ROLE_MASTER;
+    error.destination_group = request->destination_group;
+    error.flow_id = request->flow_id;
+    error.payload_length = 1U;
+    error.payload[0] = error_code;
+    (void)Gateway_EncodeAndSend(&error, GATEWAY_OUTPUT_PC);
+}
+
 static uint8_t Gateway_Start(const GatewayMessage *message, uint8_t automatic_poll,
                              uint32_t now_ms)
 {
@@ -369,16 +395,17 @@ static uint8_t Gateway_Start(const GatewayMessage *message, uint8_t automatic_po
     return 1U;
 }
 
-static void Gateway_QueuePcCommand(const GatewayMessage *message)
+static uint8_t Gateway_QueuePcCommand(const GatewayMessage *message)
 {
     if ((message == NULL) || (g_pc_queue_count >= GATEWAY_PC_QUEUE_DEPTH))
     {
-        return;
+        return 0U;
     }
 
     g_pc_queue[g_pc_queue_head].message = *message;
     g_pc_queue_head = (uint8_t)((g_pc_queue_head + 1U) % GATEWAY_PC_QUEUE_DEPTH);
     g_pc_queue_count++;
+    return 1U;
 }
 
 static uint8_t Gateway_PendingComplete(const GatewayMessage *message)
@@ -392,6 +419,11 @@ static uint8_t Gateway_PendingComplete(const GatewayMessage *message)
     }
 
     if (message->type == GATEWAY_TYPE_ERROR)
+    {
+        return 1U;
+    }
+    if ((message->type == GATEWAY_TYPE_ACK) &&
+        (message->payload[0] == GATEWAY_ACK_REJECTED))
     {
         return 1U;
     }
@@ -458,7 +490,6 @@ void GatewayRuntime_Init(GatewaySendCallback send_callback, void *context)
     g_pc_queue_head = 0U;
     g_pc_queue_tail = 0U;
     g_pc_queue_count = 0U;
-    g_next_poll_group = 1U;
     g_next_auto_flow = 0x8000U;
     g_next_poll_tick = 0U;
     g_send_callback = send_callback;
@@ -488,7 +519,15 @@ void GatewayRuntime_Process(uint32_t now_ms)
         if ((Gateway_ParseByte(&g_pc_parser, byte, &message) != 0U) &&
             (Gateway_IsPcCommand(&message) != 0U))
         {
-            Gateway_QueuePcCommand(&message);
+            if (Gateway_IsValidGroup(message.destination_group) == 0U)
+            {
+                Gateway_SendLocalError(&message,
+                                       GATEWAY_ERROR_STATE_NOT_ALLOWED);
+            }
+            else if (Gateway_QueuePcCommand(&message) == 0U)
+            {
+                Gateway_SendLocalError(&message, GATEWAY_ERROR_BUSY);
+            }
         }
         count++;
     }
@@ -535,15 +574,14 @@ void GatewayRuntime_Process(uint32_t now_ms)
         poll.source_role = GATEWAY_ROLE_CONTROL_ROOM;
         poll.source_group = 0U;
         poll.destination_role = GATEWAY_ROLE_MASTER;
-        poll.destination_group = g_next_poll_group;
-        poll.flow_id = g_next_auto_flow++;
+        poll.destination_group = GATEWAY_ACTIVE_GROUP;
+        poll.flow_id = g_next_auto_flow;
         poll.payload_length = 1U;
         poll.payload[0] = 0U;
 
         if (Gateway_Start(&poll, 1U, now_ms) != 0U)
         {
-            g_next_poll_group = (g_next_poll_group >= 4U) ? 1U :
-                                (uint8_t)(g_next_poll_group + 1U);
+            g_next_auto_flow++;
             g_next_poll_tick = now_ms + GATEWAY_POLL_INTERVAL_MS;
         }
     }

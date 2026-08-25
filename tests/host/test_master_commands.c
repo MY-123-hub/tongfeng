@@ -76,10 +76,17 @@ static void PushVfdResult(const VfdJob *job,
 
 static void ResetRuntime(void)
 {
+    VfdJob boot_stop;
+
     CHECK(MasterQueues_Init() == 1U);
     FakeParameterStore_Reset();
     MasterIdentity_Init(1U);
     MasterRuntime_Init();
+    MasterRuntime_ProcessOne(0U, 0U);
+    CHECK(MasterQueues_ReceiveVfdJob(&boot_stop, 0U) == pdPASS);
+    CHECK(boot_stop.origin == VFD_JOB_ORIGIN_SAFETY_STOP);
+    PushVfdResult(&boot_stop, VFD_RESULT_OK, 0U);
+    MasterRuntime_ProcessOne(0U, 0U);
 }
 
 static LoRaMessage PopLoRa(uint8_t expected_type)
@@ -106,8 +113,8 @@ static void TestQueryDuplicateAndConflict(void)
     result = PopLoRa(LORA_MSG_RESULT);
     CHECK(ack.payload[0] == MASTER_ACK_ACCEPTED);
     CHECK(result.payload[0] == MASTER_ERROR_NONE);
-    CHECK(result.payload[1] == MASTER_CONTROL_MODE_AUTO);
-    CHECK(result.payload[2] == MASTER_FAN_STATE_UNKNOWN);
+    CHECK(result.payload[1] == MASTER_CONTROL_MODE_MANUAL_STOP);
+    CHECK(result.payload[2] == MASTER_FAN_STATE_STOPPED);
     CHECK((uint16_t)((uint16_t)result.payload[3] |
                      (uint16_t)((uint16_t)result.payload[4] << 8U)) == 3000U);
     CHECK(FakeParameterStore_GetSaveCount() == 0U);
@@ -161,7 +168,7 @@ static void TestTargetAndFlashFailure(void)
     CHECK(result.payload[0] == MASTER_ERROR_FLASH);
     CHECK((int16_t)((uint16_t)result.payload[5] |
                     (uint16_t)((uint16_t)result.payload[6] << 8U)) == 270);
-    CHECK(MasterRuntimeDiag.parameters_dirty == 1U);
+    CHECK(MasterRuntimeDiag.parameters_dirty == 0U);
 }
 
 static void TestManualStopAndReturnAuto(void)
@@ -180,9 +187,7 @@ static void TestManualStopAndReturnAuto(void)
     CHECK(MasterQueues_ReceiveVfdJob(&job, 0U) == pdPASS);
     CHECK(job.action == VFD_ACTION_STOP_DECELERATE);
     CHECK(job.origin == VFD_JOB_ORIGIN_REMOTE);
-    CHECK(FakeParameterStore_GetSaveCount() == 1U);
-    CHECK(FakeParameterStore_GetLastSaved()->control_mode ==
-          MASTER_CONTROL_MODE_MANUAL_STOP);
+    CHECK(FakeParameterStore_GetSaveCount() == 0U);
 
     PushLoRa(&command);
     MasterRuntime_ProcessOne(1U, 0U);
@@ -205,6 +210,51 @@ static void TestManualStopAndReturnAuto(void)
     CHECK(ack.payload[0] == MASTER_ACK_ACCEPTED);
     CHECK(result.payload[0] == MASTER_ERROR_NONE);
     CHECK(result.payload[1] == MASTER_CONTROL_MODE_AUTO);
+}
+
+static void TestFrequencyDebounceAndFlashRetry(void)
+{
+    LoRaMessage command;
+    LoRaMessage result;
+    LoRaMessage error;
+    VfdJob job;
+
+    ResetRuntime();
+    command = MakeCommand(LORA_MSG_SET_FREQ, 850U, 4200U);
+    PushLoRa(&command);
+    MasterRuntime_ProcessOne(0U, 0U);
+    (void)PopLoRa(LORA_MSG_ACK);
+    CHECK(MasterQueues_ReceiveVfdJob(&job, 0U) == pdPASS);
+
+    PushVfdResult(&job, VFD_RESULT_OK, 0U);
+    MasterRuntime_ProcessOne(1U, 0U);
+    result = PopLoRa(LORA_MSG_RESULT);
+    CHECK(result.payload[0] == MASTER_ERROR_NONE);
+    CHECK((uint16_t)((uint16_t)result.payload[3] |
+                     (uint16_t)((uint16_t)result.payload[4] << 8U)) == 4200U);
+    CHECK(FakeParameterStore_GetSaveCount() == 0U);
+    CHECK(MasterRuntimeDiag.parameters_dirty == 1U);
+
+    MasterRuntime_ProcessOne(3000U, 0U);
+    CHECK(FakeParameterStore_GetSaveCount() == 0U);
+
+    FakeParameterStore_SetSaveStatus(PARAMETER_STORE_FLASH_ERROR);
+    MasterRuntime_ProcessOne(3001U, 0U);
+    CHECK(FakeParameterStore_GetSaveCount() == 1U);
+    CHECK(MasterRuntimeDiag.parameters_dirty == 1U);
+    error = PopLoRa(LORA_MSG_ERROR);
+    CHECK(error.flow_id == 850U);
+    CHECK(error.payload[0] == MASTER_ERROR_FLASH);
+
+    MasterRuntime_ProcessOne(8000U, 0U);
+    CHECK(FakeParameterStore_GetSaveCount() == 1U);
+    FakeParameterStore_SetSaveStatus(PARAMETER_STORE_SAVED);
+    MasterRuntime_ProcessOne(8001U, 0U);
+    CHECK(FakeParameterStore_GetSaveCount() == 2U);
+    CHECK(MasterRuntimeDiag.parameters_dirty == 0U);
+    CHECK(FakeParameterStore_GetLastSaved()->frequency_x100 == 4200U);
+    CHECK(FakeParameterStore_GetLastSaved()->control_mode ==
+          MASTER_CONTROL_MODE_MANUAL_STOP);
 }
 
 static void TestVfdSuccessTimeoutAndBusy(void)
@@ -288,6 +338,7 @@ int main(void)
     TestManualStopAndReturnAuto();
     TestVfdSuccessTimeoutAndBusy();
     TestInvalidParameters();
+    TestFrequencyDebounceAndFlashRetry();
     printf("master_commands: %lu checks passed\n", (unsigned long)g_checks);
     return 0;
 }

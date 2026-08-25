@@ -7,6 +7,7 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $appDir = Join-Path $repoRoot "LoraMaster_TD710\App"
 $bspDir = Join-Path $repoRoot "LoraMaster_TD710\Bsp"
 $slaveAppDir = Join-Path $repoRoot "LoraSlave.switch match\App"
+$controlBspDir = Join-Path $repoRoot "控制室\控制室\Bsp"
 $fakeDir = Join-Path $PSScriptRoot "fakes"
 $outputDir = Join-Path $env:TEMP "lora_master_host_tests"
 
@@ -98,6 +99,33 @@ $tests = @(
             (Join-Path $appDir "master_queues.c"),
             (Join-Path $appDir "master_runtime.c"),
             (Join-Path $PSScriptRoot "test_master_runtime.c")
+        )
+    },
+    @{
+        Name = "control_room_gateway_runtime"
+        Includes = @($controlBspDir)
+        Sources = @(
+            (Join-Path $controlBspDir "gateway_runtime.c"),
+            (Join-Path $repoRoot "tests\test_control_room_gateway_runtime.c")
+        )
+    },
+    @{
+        Name = "unified_temperature_chain"
+        Includes = @($fakeDir)
+        Sources = @(
+            (Join-Path $fakeDir "fake_queue.c"),
+            (Join-Path $fakeDir "fake_parameter_store.c"),
+            (Join-Path $appDir "lora_protocol.c"),
+            (Join-Path $appDir "auto_control.c"),
+            (Join-Path $appDir "command_service.c"),
+            (Join-Path $appDir "master_identity.c"),
+            (Join-Path $appDir "master_ingress.c"),
+            (Join-Path $appDir "master_temperature.c"),
+            (Join-Path $appDir "master_queues.c"),
+            (Join-Path $appDir "master_runtime.c"),
+            (Join-Path $slaveAppDir "slave_protocol_runtime.c"),
+            (Join-Path $controlBspDir "gateway_runtime.c"),
+            (Join-Path $PSScriptRoot "test_unified_temperature_chain.c")
         )
     },
     @{
