@@ -78,12 +78,26 @@ typedef struct
 
 typedef struct
 {
+    int16_t temperature_x10;
+    uint16_t humidity_x10;
+    uint32_t pressure_pa;
+    uint32_t sample_tick;
+    uint8_t valid;
+    uint8_t error_code;
+} MasterEnvironmentSample;
+
+typedef struct
+{
     int16_t temperatures[LORA_PROTOCOL_TEMP_COUNT];
     int16_t target_temperature_x10;
+    int16_t environment_temperature_x10;
     uint16_t frequency_x100;
+    uint16_t environment_humidity_x10;
+    uint32_t environment_pressure_pa;
     uint8_t control_mode;
     uint8_t fan_state;
     uint8_t temperature_valid;
+    uint8_t environment_valid;
 } MasterUiSnapshot;
 
 #endif /* MASTER_MESSAGES_H */

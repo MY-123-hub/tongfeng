@@ -64,6 +64,41 @@ static LoRaMessage MakeTemperature(uint8_t group, uint16_t flow_id)
     }
     message.payload[14] = 0U;
     message.payload[15] = 0U;
+    message.payload[74] = 0U;
+    message.payload[75] = 0x80U;
+    return message;
+}
+
+static LoRaMessage MakeEnvironmentRead(uint8_t destination_group,
+                                       uint16_t flow_id,
+                                       uint8_t mode)
+{
+    LoRaMessage message = MakeRead(destination_group, flow_id, mode);
+    message.type = LORA_MSG_READ_ENV;
+    return message;
+}
+
+static LoRaMessage MakeEnvironment(uint8_t group, uint16_t flow_id)
+{
+    LoRaMessage message;
+
+    memset(&message, 0xFF, sizeof(message));
+    message.version = LORA_PROTOCOL_VERSION;
+    message.type = LORA_MSG_ENV_DATA;
+    message.source_role = LORA_ROLE_SLAVE;
+    message.source_group = group;
+    message.destination_role = LORA_ROLE_MASTER;
+    message.destination_group = group;
+    message.flow_id = flow_id;
+    message.payload_length = LORA_PROTOCOL_ENV_PAYLOAD_SIZE;
+    message.payload[0] = 0xC8U;  /* 节点1湿度45.6%RH。 */
+    message.payload[1] = 0x01U;
+    message.payload[72] = 0x26U; /* 从机BME湿度55.0%RH。 */
+    message.payload[73] = 0x02U;
+    message.payload[76] = 0xA0U; /* 从机BME气压100000Pa。 */
+    message.payload[77] = 0x86U;
+    message.payload[78] = 0x01U;
+    message.payload[79] = 0x00U;
     return message;
 }
 
@@ -138,8 +173,8 @@ static void ResetRuntime(uint8_t group)
 static void TestStandardFlowAndCache(void)
 {
     static const uint8_t expected_read[] = {
-        0xAAU, 0x55U, 0x01U, 0x01U, 0x02U, 0x01U, 0x03U,
-        0x01U, 0x64U, 0x00U, 0x01U, 0x01U, 0x5FU, 0xD8U
+        0xAAU, 0x55U, 0x02U, 0x01U, 0x02U, 0x01U, 0x03U,
+        0x01U, 0x64U, 0x00U, 0x01U, 0x00U, 0x6EU, 0x17U
     };
     LoRaMessage input;
     LoRaMessage output;
@@ -155,7 +190,7 @@ static void TestStandardFlowAndCache(void)
     CHECK(output.source_role == LORA_ROLE_MASTER);
     CHECK(output.destination_role == LORA_ROLE_SLAVE);
     CHECK(output.flow_id == 100U);
-    CHECK(output.payload[0] == 1U);
+    CHECK(output.payload[0] == 0U);
     CHECK(LoRaProtocol_Encode(&output, frame, sizeof(frame), &frame_length) ==
           LORA_PROTOCOL_OK);
     CHECK(frame_length == sizeof(expected_read));
@@ -228,6 +263,43 @@ static void TestAddressFlowAndTimeout(void)
     MasterRuntime_ProcessOne(4001U, 0U);
     CHECK(MasterQueues_ReceiveLoRa(&output, 0U) == pdFAIL);
     CHECK(MasterRuntimeDiag.temperature_reject_count == 1U);
+}
+
+static void TestEnvironmentFlowAndMasterBmeInjection(void)
+{
+    MasterEnvironmentSample bme;
+    LoRaMessage input;
+    LoRaMessage output;
+
+    ResetRuntime(1U);
+    memset(&bme, 0, sizeof(bme));
+    bme.temperature_x10 = 223;
+    bme.humidity_x10 = 654U;
+    bme.pressure_pa = 101234UL;
+    bme.sample_tick = 100U;
+    bme.valid = 1U;
+    CHECK(MasterQueues_OverwriteEnvironment(&bme) == pdPASS);
+    MasterRuntime_ProcessOne(100U, 0U);
+
+    input = MakeEnvironmentRead(1U, 500U, 0U);
+    PushMessage(&input);
+    MasterRuntime_ProcessOne(101U, 0U);
+    CHECK(MasterQueues_ReceiveLoRa(&output, 0U) == pdPASS);
+    CHECK(output.type == LORA_MSG_READ_ENV);
+    CHECK(output.payload[0] == 0U);
+
+    input = MakeEnvironment(1U, 500U);
+    PushMessage(&input);
+    MasterRuntime_ProcessOne(200U, 0U);
+    CHECK(MasterQueues_ReceiveLoRa(&output, 0U) == pdPASS);
+    CHECK(output.type == LORA_MSG_ENV_DATA);
+    CHECK(output.payload_length == LORA_PROTOCOL_ENV_PAYLOAD_SIZE);
+    CHECK(output.payload[0] == 0xC8U && output.payload[1] == 0x01U);
+    CHECK(output.payload[72] == 0x26U && output.payload[73] == 0x02U);
+    CHECK(output.payload[74] == 0x8EU && output.payload[75] == 0x02U);
+    CHECK(output.payload[80] == 0x72U && output.payload[81] == 0x8BU);
+    CHECK(output.payload[82] == 0x01U && output.payload[83] == 0x00U);
+    CHECK(output.payload[84] == 0xFFU && output.payload[85] == 0xFFU);
 }
 
 static void TestFullTxQueueDoesNotStartRequest(void)
@@ -404,6 +476,7 @@ int main(void)
 {
     TestStandardFlowAndCache();
     TestAddressFlowAndTimeout();
+    TestEnvironmentFlowAndMasterBmeInjection();
     TestFullTxQueueDoesNotStartRequest();
     TestInvalidIdentity();
     TestAutomaticControlIntegration();

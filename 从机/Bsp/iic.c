@@ -14,22 +14,22 @@ void GZP6859D_ReadSingleModePressureData(uint32_t *pPressure)
     int32_t press = 0;
     
     // 进行单次传感器压力信号采集模式
-    HAL_I2C_Mem_Write(&hi2c2, (GZP6859D_SLAVE_ADDR << 1) | GZP6859D_WRITE_BIT,
+    HAL_I2C_Mem_Write(&hi2c1, (GZP6859D_SLAVE_ADDR << 1) | GZP6859D_WRITE_BIT,
                     GZP6859D_CMD_ADDR, I2C_MEMADD_SIZE_8BIT, &cmd, 1, 10);
     
     // 采集结束
-    HAL_I2C_Mem_Read(&hi2c2, (GZP6859D_SLAVE_ADDR << 1) | GZP6859D_READ_BIT,
+    HAL_I2C_Mem_Read(&hi2c1, (GZP6859D_SLAVE_ADDR << 1) | GZP6859D_READ_BIT,
                     GZP6859D_CMD_ADDR, I2C_MEMADD_SIZE_8BIT, &result, 1, 10);
     printf("0x%02X  ", result);
     
     // 获取压力数据AD值
-    HAL_I2C_Mem_Read(&hi2c2, (GZP6859D_SLAVE_ADDR << 1) | GZP6859D_READ_BIT,
+    HAL_I2C_Mem_Read(&hi2c1, (GZP6859D_SLAVE_ADDR << 1) | GZP6859D_READ_BIT,
                     GZP6859D_DATA_MSB_ADDR, I2C_MEMADD_SIZE_8BIT, &pressArr[1], 1, 10);
     printf("0x%02X  ", pressArr[1]);
-    HAL_I2C_Mem_Read(&hi2c2, (GZP6859D_SLAVE_ADDR << 1) | GZP6859D_READ_BIT,
+    HAL_I2C_Mem_Read(&hi2c1, (GZP6859D_SLAVE_ADDR << 1) | GZP6859D_READ_BIT,
                     GZP6859D_DATA_CSB_ADDR, I2C_MEMADD_SIZE_8BIT, &pressArr[2], 1, 10);
     printf("0x%02X  ", pressArr[2]);
-    HAL_I2C_Mem_Read(&hi2c2, (GZP6859D_SLAVE_ADDR << 1) | GZP6859D_READ_BIT,
+    HAL_I2C_Mem_Read(&hi2c1, (GZP6859D_SLAVE_ADDR << 1) | GZP6859D_READ_BIT,
                     GZP6859D_DATA_LSB_ADDR, I2C_MEMADD_SIZE_8BIT, &pressArr[3], 1, 10);
     printf("0x%02X  ", pressArr[3]);
     
@@ -54,18 +54,18 @@ void GZP6859D_ReadCombinedModeData(uint8_t *pTemperature, uint8_t *pPressure)
     int32_t temp,press;     // 记录计算后的数据
     
     // 进行组合模式读取数据
-    HAL_I2C_Mem_Write(&hi2c2, (GZP6859D_SLAVE_ADDR << 1)| GZP6859D_WRITE_BIT,
+    HAL_I2C_Mem_Write(&hi2c1, (GZP6859D_SLAVE_ADDR << 1)| GZP6859D_WRITE_BIT,
                     GZP6859D_CMD_ADDR, I2C_MEMADD_SIZE_8BIT, &cmd, 1, 10);
     // 采集结束
     HAL_Delay(10);
-    HAL_I2C_Mem_Read(&hi2c2, (GZP6859D_SLAVE_ADDR << 1) | GZP6859D_READ_BIT,
+    HAL_I2C_Mem_Read(&hi2c1, (GZP6859D_SLAVE_ADDR << 1) | GZP6859D_READ_BIT,
                     GZP6859D_CMD_ADDR, I2C_MEMADD_SIZE_8BIT, &result, 1, 10);
 //    printf("命令地址：0x%02X  \r\n", result);   //——调试
     
     // 获取温度数据AD值
-    HAL_I2C_Mem_Read(&hi2c2, (GZP6859D_SLAVE_ADDR << 1) | GZP6859D_READ_BIT,
+    HAL_I2C_Mem_Read(&hi2c1, (GZP6859D_SLAVE_ADDR << 1) | GZP6859D_READ_BIT,
                     GZP6859D_TEMP_MSB_ADDR, I2C_MEMADD_SIZE_8BIT, &tempArr[0], 1, 10);
-    HAL_I2C_Mem_Read(&hi2c2, (GZP6859D_SLAVE_ADDR << 1) | GZP6859D_READ_BIT,
+    HAL_I2C_Mem_Read(&hi2c1, (GZP6859D_SLAVE_ADDR << 1) | GZP6859D_READ_BIT,
                     GZP6859D_TEMP_LSB_ADDR, I2C_MEMADD_SIZE_8BIT, &tempArr[1], 1, 10);
 //    printf("TEMP:0x%02X 0x%02X ", tempArr[0],tempArr[1]);   //——调试
     
@@ -77,11 +77,11 @@ void GZP6859D_ReadCombinedModeData(uint8_t *pTemperature, uint8_t *pPressure)
 //    printf("温度:%d \r\n", temp);   //——调试
     
     // 获取压力数据AD值
-    HAL_I2C_Mem_Read(&hi2c2, (GZP6859D_SLAVE_ADDR << 1) | GZP6859D_READ_BIT,
+    HAL_I2C_Mem_Read(&hi2c1, (GZP6859D_SLAVE_ADDR << 1) | GZP6859D_READ_BIT,
                     GZP6859D_DATA_MSB_ADDR, I2C_MEMADD_SIZE_8BIT, &pressArr[0], 1, 10);
-    HAL_I2C_Mem_Read(&hi2c2, (GZP6859D_SLAVE_ADDR << 1) | GZP6859D_READ_BIT,
+    HAL_I2C_Mem_Read(&hi2c1, (GZP6859D_SLAVE_ADDR << 1) | GZP6859D_READ_BIT,
                     GZP6859D_DATA_CSB_ADDR, I2C_MEMADD_SIZE_8BIT, &pressArr[1], 1, 10);
-    HAL_I2C_Mem_Read(&hi2c2, (GZP6859D_SLAVE_ADDR << 1) | GZP6859D_READ_BIT,
+    HAL_I2C_Mem_Read(&hi2c1, (GZP6859D_SLAVE_ADDR << 1) | GZP6859D_READ_BIT,
                     GZP6859D_DATA_LSB_ADDR, I2C_MEMADD_SIZE_8BIT, &pressArr[2], 1, 10);
 //    printf("DATA:0x%02X 0x%02X 0x%02X ", pressArr[0], pressArr[1], pressArr[2]);   //——调试
     

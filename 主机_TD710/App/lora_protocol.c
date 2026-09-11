@@ -27,11 +27,16 @@ static LoRaProtocolStatus LoRaProtocol_ValidatePayloadLength(uint8_t type,
     switch (type)
     {
         case (uint8_t)LORA_MSG_READ_TEMP:
+        case (uint8_t)LORA_MSG_READ_ENV:
             return (payload_length == 1U) ?
                    LORA_PROTOCOL_OK : LORA_PROTOCOL_INVALID_PAYLOAD_LENGTH;
 
         case (uint8_t)LORA_MSG_TEMP_36:
             return (payload_length == LORA_PROTOCOL_TEMP_PAYLOAD_SIZE) ?
+                   LORA_PROTOCOL_OK : LORA_PROTOCOL_INVALID_PAYLOAD_LENGTH;
+
+        case (uint8_t)LORA_MSG_ENV_DATA:
+            return (payload_length == LORA_PROTOCOL_ENV_PAYLOAD_SIZE) ?
                    LORA_PROTOCOL_OK : LORA_PROTOCOL_INVALID_PAYLOAD_LENGTH;
 
         case (uint8_t)LORA_MSG_SET_FREQ:
@@ -68,6 +73,7 @@ static LoRaProtocolStatus LoRaProtocol_ValidateDirection(const LoRaMessage *mess
     switch (message->type)
     {
         case (uint8_t)LORA_MSG_READ_TEMP:
+        case (uint8_t)LORA_MSG_READ_ENV:
             if (((source_role == (uint8_t)LORA_ROLE_CONTROL_ROOM) &&
                  (destination_role == (uint8_t)LORA_ROLE_MASTER)) ||
                 ((source_role == (uint8_t)LORA_ROLE_MASTER) &&
@@ -78,6 +84,7 @@ static LoRaProtocolStatus LoRaProtocol_ValidateDirection(const LoRaMessage *mess
             break;
 
         case (uint8_t)LORA_MSG_TEMP_36:
+        case (uint8_t)LORA_MSG_ENV_DATA:
             if (((source_role == (uint8_t)LORA_ROLE_SLAVE) &&
                  (destination_role == (uint8_t)LORA_ROLE_MASTER)) ||
                 ((source_role == (uint8_t)LORA_ROLE_MASTER) &&
@@ -124,6 +131,7 @@ static LoRaProtocolStatus LoRaProtocol_ValidatePayloadValue(const LoRaMessage *m
     switch (message->type)
     {
         case (uint8_t)LORA_MSG_READ_TEMP:
+        case (uint8_t)LORA_MSG_READ_ENV:
             return (message->payload[0] <= 1U) ?
                    LORA_PROTOCOL_OK : LORA_PROTOCOL_INVALID_PAYLOAD_VALUE;
 

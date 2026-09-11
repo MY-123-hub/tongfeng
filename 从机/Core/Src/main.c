@@ -62,6 +62,7 @@ DHT11_Data_TypeDef DHT11_Data;
 #define SENSOR_POINTS_PER_PORT       (6U)
 #define SENSOR_TOTAL_POINT_COUNT     (SENSOR_PORT_COUNT * SENSOR_POINTS_PER_PORT)
 #define SENSOR_CONVERT_WAIT_MS       (800U)
+#define SENSOR_SAMPLE_PERIOD_MS      (1000U)
 
 GPIO_TypeDef* DS18B20_ChannelPort[SENSOR_PORT_COUNT]={GPIOA,GPIOA,GPIOA,GPIOA,GPIOB,GPIOB};
 uint16_t DS18B20_ChannelPin[SENSOR_PORT_COUNT]={GPIO_PIN_5,GPIO_PIN_6,GPIO_PIN_7,GPIO_PIN_8,GPIO_PIN_15,GPIO_PIN_14};
@@ -84,7 +85,9 @@ void SystemClock_Config(void);
 /* USER CODE BEGIN 0 */
 static uint8_t s_sample_active;
 static uint32_t s_sample_ready_tick;
+static uint32_t s_next_sample_tick;
 static uint16_t s_sample_flow_id;
+static uint8_t s_sample_has_request;
 static uint32_t s_sensor_rescan_count;
 static uint32_t s_sensor_read_failure_count;
 static uint32_t s_sensor_overflow_count;
@@ -154,18 +157,20 @@ static uint8_t Sensor_HasAnyDetected(void)
     return 0U;
 }
 
-/* 按 ROM 家族码调用对应驱动，读取或 CRC 失败时返回无效。 */
-static uint8_t Sensor_ReadOneTemperature(GPIO_TypeDef *port, uint16_t pin,
-                                         uint8_t channel, uint8_t sensor_index,
-                                         float *temperature)
+/* 按ROM家族码读取；GXHT3W一次读取同时保留温度和湿度。 */
+static uint8_t Sensor_ReadOne(GPIO_TypeDef *port, uint16_t pin,
+                              uint8_t channel, uint8_t sensor_index,
+                              float *temperature, float *humidity,
+                              uint8_t *humidity_valid)
 {
-    float humidity = 0.0f;
-
-    if (temperature == NULL)
+    if ((temperature == NULL) || (humidity == NULL) ||
+        (humidity_valid == NULL))
     {
         return 0U;
     }
     *temperature = 0.0f;
+    *humidity = 0.0f;
+    *humidity_valid = 0U;
     if (DS18B20_ID[channel][sensor_index][0] == 0x28U)
     {
         *temperature = DS18B20_Read_Temp(port, pin, channel, sensor_index);
@@ -173,17 +178,21 @@ static uint8_t Sensor_ReadOneTemperature(GPIO_TypeDef *port, uint16_t pin,
     }
     if (DS18B20_ID[channel][sensor_index][0] == 0x2CU)
     {
-        return GXHT3W_Read_TempHum(port, pin, channel, sensor_index, temperature, &humidity);
+        if (GXHT3W_Read_TempHum(port, pin, channel, sensor_index,
+                               temperature, humidity) != 0U)
+        {
+            *humidity_valid = 1U;
+            return 1U;
+        }
     }
     return 0U;
 }
 
-/* 不设置业务温度范围，但在写入 int16_t 前防止数值转换溢出。 */
 static uint8_t Sensor_ToDeciCelsius(float temperature, int16_t *result)
 {
     float scaled;
 
-    if ((result == NULL) || (temperature == 0.0f))
+    if ((result == NULL) || (temperature < -55.0f) || (temperature > 125.0f))
     {
         return 0U;
     }
@@ -193,6 +202,19 @@ static uint8_t Sensor_ToDeciCelsius(float temperature, int16_t *result)
         return 0U;
     }
     *result = (int16_t)(scaled + ((scaled >= 0.0f) ? 0.5f : -0.5f));
+    return 1U;
+}
+
+static uint8_t Sensor_ToDeciHumidity(float humidity, uint16_t *result)
+{
+    float scaled;
+
+    if ((result == NULL) || (humidity < 0.0f) || (humidity > 100.0f))
+    {
+        return 0U;
+    }
+    scaled = humidity * 10.0f;
+    *result = (uint16_t)(scaled + 0.5f);
     return 1U;
 }
 
@@ -224,15 +246,66 @@ static void Sensor_Convert_All(void)
     }
 }
 
-/* 读取 36 点；未接、ROM/数据 CRC 失败和 0.0℃ 均按协议填 00 00。 */
-static void Sensor_Read_AllTemperatures(int16_t temperatures[36])
+static void Sensor_InitSnapshot(SlaveTelemetrySnapshot *snapshot)
 {
-    uint8_t channel, sen_idx;
-    if (temperatures == NULL)
+    uint8_t index;
+
+    if (snapshot == NULL)
     {
         return;
     }
-    memset(temperatures, 0, sizeof(int16_t) * SENSOR_TOTAL_POINT_COUNT);
+    memset(snapshot, 0, sizeof(*snapshot));
+    for (index = 0U; index < SENSOR_TOTAL_POINT_COUNT; index++)
+    {
+        snapshot->node_temperature_x10[index] = SLAVE_TEMPERATURE_INVALID_X10;
+        snapshot->node_humidity_x10[index] = SLAVE_HUMIDITY_INVALID_X10;
+    }
+    snapshot->slave_bme_temperature_x10 = SLAVE_TEMPERATURE_INVALID_X10;
+    snapshot->slave_bme_humidity_x10 = SLAVE_HUMIDITY_INVALID_X10;
+    snapshot->slave_bme_pressure_pa = SLAVE_PRESSURE_INVALID_PA;
+    snapshot->rain_value = SLAVE_RAIN_VALUE_UNAVAILABLE;
+}
+
+static void Sensor_ReadBme(SlaveTelemetrySnapshot *snapshot)
+{
+    int32_t temperature_x100;
+    uint32_t pressure_pa;
+    uint32_t humidity_x1024;
+
+    if ((snapshot == NULL) || (bme_ok == 0U))
+    {
+        return;
+    }
+    if (BME280_ReadAll(&bme280, &temperature_x100,
+                       &pressure_pa, &humidity_x1024) != HAL_OK)
+    {
+        return;
+    }
+    if ((temperature_x100 < -4000) || (temperature_x100 > 8500) ||
+        (humidity_x1024 > 102400UL) ||
+        (pressure_pa < 30000UL) || (pressure_pa > 110000UL))
+    {
+        return;
+    }
+
+    snapshot->slave_bme_temperature_x10 = (int16_t)(
+        (temperature_x100 >= 0) ? ((temperature_x100 + 5) / 10) :
+                                  ((temperature_x100 - 5) / 10));
+    snapshot->slave_bme_humidity_x10 = (uint16_t)(
+        (humidity_x1024 * 10UL + 512UL) / 1024UL);
+    snapshot->slave_bme_pressure_pa = pressure_pa;
+}
+
+/* 读取固定36槽位；空槽和失败值保持协议无效哨兵。 */
+static void Sensor_ReadSnapshot(SlaveTelemetrySnapshot *snapshot)
+{
+    uint8_t channel, sen_idx;
+
+    if (snapshot == NULL)
+    {
+        return;
+    }
+    Sensor_InitSnapshot(snapshot);
 
     for (channel = 0U; channel < SENSOR_PORT_COUNT; channel++) {
         GPIO_TypeDef *port = DS18B20_ChannelPort[channel];
@@ -243,26 +316,37 @@ static void Sensor_Read_AllTemperatures(int16_t temperatures[36])
         for (sen_idx = 0U; (sen_idx < Sensor_BoundedCount(channel)) &&
              (real_count < SENSOR_POINTS_PER_PORT); sen_idx++) {
             float temperature = 0.0f;
+            float humidity = 0.0f;
             int16_t deci_celsius;
+            uint16_t deci_humidity;
+            uint8_t humidity_valid = 0U;
             if (is_ghost_id(channel, sen_idx)) continue;
 
-            if ((Sensor_ReadOneTemperature(port, pin, channel, sen_idx, &temperature) != 0U) &&
+            if ((Sensor_ReadOne(port, pin, channel, sen_idx, &temperature,
+                                &humidity, &humidity_valid) != 0U) &&
                 (Sensor_ToDeciCelsius(temperature, &deci_celsius) != 0U))
             {
-                temperatures[point + real_count] = deci_celsius;
+                snapshot->node_temperature_x10[point + real_count] = deci_celsius;
+                if ((humidity_valid != 0U) &&
+                    (Sensor_ToDeciHumidity(humidity, &deci_humidity) != 0U))
+                {
+                    snapshot->node_humidity_x10[point + real_count] = deci_humidity;
+                }
             }
             else
             {
                 s_sensor_read_failure_count++;
             }
 #if DEBUG_LOG
-            printf("[D] ch%d[%d] fam=0x%02X T=%.2f\r\n",
+            printf("[D] ch%d[%d] fam=0x%02X T=%.2f H=%.2f\r\n",
                     channel, sen_idx, DS18B20_ID[channel][sen_idx][0],
-                    temperature);
+                    temperature, humidity);
 #endif
             real_count++;
         }
     }
+    Sensor_ReadBme(snapshot);
+    snapshot->sample_tick = HAL_GetTick();
 }
 /* USER CODE END 0 */
 
@@ -298,13 +382,13 @@ int main(void)
   MX_TIM2_Init();
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
-  MX_I2C2_Init();
-  HAL_I2C_MspInit(&hi2c2);
+  MX_I2C1_Init();
+  HAL_I2C_MspInit(&hi2c1);
   /* USER CODE BEGIN 2 */
   printf("\r\n uart1 printf init success!! \r\n");
-  /* BME280 温湿度气压传感器（I2C2: PB10-SCL, PB11-SDA），自动探测 0x76/0x77 */
-  if (BME280_Init(&bme280, &hi2c2, BME280_I2C_ADDR_PRIM) == HAL_OK ||
-      BME280_Init(&bme280, &hi2c2, BME280_I2C_ADDR_SEC) == HAL_OK)
+  /* BME280 温湿度气压传感器（I2C1: PB6-SCL, PB7-SDA），自动探测 0x76/0x77 */
+  if (BME280_Init(&bme280, &hi2c1, BME280_I2C_ADDR_PRIM) == HAL_OK ||
+      BME280_Init(&bme280, &hi2c1, BME280_I2C_ADDR_SEC) == HAL_OK)
   {
     BME280_Config(&bme280, BME280_OVERSAMPLING_X2,
                   BME280_OVERSAMPLING_X16, BME280_OVERSAMPLING_X1,
@@ -329,6 +413,9 @@ int main(void)
   Sensor_Rescan_All(1U);
   sensor_type = (Sensor_HasAnyDetected() != 0U) ? SENSOR_TYPE_NEW : SENSOR_TYPE_NONE;
   if (sensor_type == SENSOR_TYPE_NEW) { led3_off; }
+  s_sample_active = 0U;
+  s_sample_has_request = 0U;
+  s_next_sample_tick = HAL_GetTick();
 
   /* USER CODE END 2 */
 
@@ -349,16 +436,42 @@ int main(void)
       Sensor_Rescan_All(0U);
       Sensor_Convert_All();
       s_sample_flow_id = requested_flow;
+      s_sample_has_request = 1U;
+      s_sample_ready_tick = HAL_GetTick() + SENSOR_CONVERT_WAIT_MS;
+      s_sample_active = 1U;
+    }
+    else if (SlaveRuntime_TakeSampleRequest(&requested_flow) != 0U)
+    {
+      /* 强制请求到达时复用正在进行的后台转换。 */
+      s_sample_flow_id = requested_flow;
+      s_sample_has_request = 1U;
+    }
+
+    if ((s_sample_active == 0U) &&
+        ((uint32_t)(now - s_next_sample_tick) < 0x80000000UL))
+    {
+      Sensor_Rescan_All(0U);
+      Sensor_Convert_All();
+      s_sample_has_request = 0U;
       s_sample_ready_tick = HAL_GetTick() + SENSOR_CONVERT_WAIT_MS;
       s_sample_active = 1U;
     }
 
     if ((s_sample_active != 0U) && ((uint32_t)(now - s_sample_ready_tick) < 0x80000000UL))
     {
-      int16_t temperatures[SENSOR_TOTAL_POINT_COUNT];
-      Sensor_Read_AllTemperatures(temperatures);
-      SlaveRuntime_CompleteSample(s_sample_flow_id, temperatures);
+      SlaveTelemetrySnapshot snapshot;
+      Sensor_ReadSnapshot(&snapshot);
+      if (s_sample_has_request != 0U)
+      {
+        SlaveRuntime_CompleteSample(s_sample_flow_id, &snapshot);
+      }
+      else
+      {
+        SlaveRuntime_UpdateSnapshot(&snapshot);
+      }
       s_sample_active = 0U;
+      s_sample_has_request = 0U;
+      s_next_sample_tick = HAL_GetTick() + SENSOR_SAMPLE_PERIOD_MS;
     }
 
     if ((sensor_type == SENSOR_TYPE_NONE) && (time_100ms >= 10U))

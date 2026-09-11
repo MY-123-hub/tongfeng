@@ -21,6 +21,29 @@ static AutoControlState g_auto_control;
 static MasterParameters g_parameters;
 static MasterUiSnapshot g_ui_snapshot;
 static MasterEvent g_runtime_event;
+static MasterEnvironmentSample g_environment_sample;
+static int16_t g_slave_bme_temperature_x10;
+
+typedef enum
+{
+    MASTER_ENV_IDLE = 0,
+    MASTER_ENV_WAIT_SLAVE,
+    MASTER_ENV_REPLY_PENDING,
+    MASTER_ENV_ERROR_PENDING
+} MasterEnvironmentState;
+
+typedef struct
+{
+    uint8_t cache[LORA_PROTOCOL_ENV_PAYLOAD_SIZE];
+    uint32_t cache_tick;
+    uint32_t request_tick;
+    uint16_t pending_flow_id;
+    uint8_t cache_valid;
+    MasterEnvironmentState state;
+    uint8_t pending_error;
+} MasterEnvironmentService;
+
+static MasterEnvironmentService g_environment_service;
 static volatile uint32_t g_control_epoch;
 static uint32_t g_auto_pending_epoch;
 static uint8_t g_fan_state;
@@ -65,6 +88,27 @@ static uint16_t MasterRuntime_ReadU16(const uint8_t *payload)
 {
     return (uint16_t)((uint16_t)payload[0] |
                       (uint16_t)((uint16_t)payload[1] << 8U));
+}
+
+static void MasterRuntime_WriteU16(uint8_t *payload, uint16_t value)
+{
+    payload[0] = (uint8_t)(value & 0xFFU);
+    payload[1] = (uint8_t)(value >> 8U);
+}
+
+static void MasterRuntime_WriteU32(uint8_t *payload, uint32_t value)
+{
+    payload[0] = (uint8_t)(value & 0xFFUL);
+    payload[1] = (uint8_t)((value >> 8U) & 0xFFUL);
+    payload[2] = (uint8_t)((value >> 16U) & 0xFFUL);
+    payload[3] = (uint8_t)((value >> 24U) & 0xFFUL);
+}
+
+static uint8_t MasterRuntime_BmeIsFresh(uint32_t now_ms)
+{
+    return ((g_environment_sample.valid != 0U) &&
+            ((uint32_t)(now_ms - g_environment_sample.sample_tick) <=
+             MASTER_BME_CACHE_FRESH_MS)) ? 1U : 0U;
 }
 
 static void MasterRuntime_UpdateUi(void)
@@ -173,15 +217,17 @@ static uint8_t MasterRuntime_QueueError(uint16_t flow_id, uint8_t error_code)
     return 1U;
 }
 
-static uint8_t MasterRuntime_QueueSlaveRead(uint16_t flow_id)
+static uint8_t MasterRuntime_QueueSlaveRead(uint8_t request_type,
+                                            uint16_t flow_id,
+                                            uint8_t read_mode)
 {
     LoRaMessage message;
     uint8_t local_group = MasterIdentity_GetGroup();
 
-    MasterRuntime_SetAddress(&message, LORA_MSG_READ_TEMP,
+    MasterRuntime_SetAddress(&message, request_type,
                              LORA_ROLE_SLAVE, local_group, flow_id);
     message.payload_length = 1U;
-    message.payload[0] = 1U;
+    message.payload[0] = read_mode;
     if (MasterQueues_SendLoRa(&message, 0U) != pdPASS)
     {
         MasterRuntimeDiag.lora_queue_failure_count++;
@@ -191,7 +237,8 @@ static uint8_t MasterRuntime_QueueSlaveRead(uint16_t flow_id)
 }
 
 static uint8_t MasterRuntime_QueueTemperature(uint16_t flow_id,
-                                              const int16_t *temperatures)
+                                              const int16_t *temperatures,
+                                              uint32_t now_ms)
 {
     LoRaMessage message;
     uint32_t i;
@@ -204,6 +251,51 @@ static uint8_t MasterRuntime_QueueTemperature(uint16_t flow_id,
         uint16_t raw = (uint16_t)temperatures[i];
         message.payload[i * 2U] = (uint8_t)(raw & 0x00FFU);
         message.payload[(i * 2U) + 1U] = (uint8_t)((raw >> 8U) & 0x00FFU);
+    }
+    MasterRuntime_WriteU16(&message.payload[72],
+                           (uint16_t)g_slave_bme_temperature_x10);
+    MasterRuntime_WriteU16(
+        &message.payload[74],
+        (uint16_t)((MasterRuntime_BmeIsFresh(now_ms) != 0U) ?
+                   g_environment_sample.temperature_x10 :
+                   LORA_PROTOCOL_TEMPERATURE_INVALID));
+
+    if (MasterQueues_SendLoRa(&message, 0U) != pdPASS)
+    {
+        MasterRuntimeDiag.lora_queue_failure_count++;
+        return 0U;
+    }
+    return 1U;
+}
+
+static uint8_t MasterRuntime_QueueEnvironment(uint16_t flow_id,
+                                              const uint8_t *slave_payload,
+                                              uint32_t now_ms)
+{
+    LoRaMessage message;
+
+    if (slave_payload == NULL)
+    {
+        return 0U;
+    }
+    MasterRuntime_SetAddress(&message, LORA_MSG_ENV_DATA,
+                             LORA_ROLE_CONTROL_ROOM, 0U, flow_id);
+    message.payload_length = LORA_PROTOCOL_ENV_PAYLOAD_SIZE;
+    memcpy(message.payload, slave_payload, LORA_PROTOCOL_ENV_PAYLOAD_SIZE);
+
+    if (MasterRuntime_BmeIsFresh(now_ms) != 0U)
+    {
+        MasterRuntime_WriteU16(&message.payload[74],
+                               g_environment_sample.humidity_x10);
+        MasterRuntime_WriteU32(&message.payload[80],
+                               g_environment_sample.pressure_pa);
+    }
+    else
+    {
+        MasterRuntime_WriteU16(&message.payload[74],
+                               LORA_PROTOCOL_HUMIDITY_INVALID);
+        MasterRuntime_WriteU32(&message.payload[80],
+                               LORA_PROTOCOL_PRESSURE_INVALID);
     }
 
     if (MasterQueues_SendLoRa(&message, 0U) != pdPASS)
@@ -685,8 +777,52 @@ static void MasterRuntime_HandleRead(const LoRaMessage *message,
                                      uint32_t now_ms)
 {
     MasterTemperatureReadDecision decision;
+    uint8_t env_fresh;
 
     MasterRuntimeDiag.read_request_count++;
+    if (message->type == LORA_MSG_READ_ENV)
+    {
+        if ((g_temperature_service.state != MASTER_TEMP_IDLE) ||
+            (g_environment_service.state != MASTER_ENV_IDLE))
+        {
+            if (!((g_environment_service.state == MASTER_ENV_WAIT_SLAVE) &&
+                  (g_environment_service.pending_flow_id == message->flow_id)))
+            {
+                if (MasterRuntime_QueueError(message->flow_id,
+                                             MASTER_ERROR_BUSY) != 0U)
+                {
+                    MasterRuntimeDiag.busy_reject_count++;
+                }
+            }
+            return;
+        }
+
+        env_fresh = ((g_environment_service.cache_valid != 0U) &&
+                     ((uint32_t)(now_ms - g_environment_service.cache_tick) <=
+                      MASTER_ENV_CACHE_FRESH_MS)) ? 1U : 0U;
+        g_environment_service.pending_flow_id = message->flow_id;
+        if ((message->payload[0] == 0U) && (env_fresh != 0U))
+        {
+            g_environment_service.state = MASTER_ENV_REPLY_PENDING;
+        }
+        else if (MasterRuntime_QueueSlaveRead(LORA_MSG_READ_ENV,
+                                              message->flow_id,
+                                              message->payload[0]) != 0U)
+        {
+            g_environment_service.request_tick = now_ms;
+            g_environment_service.state = MASTER_ENV_WAIT_SLAVE;
+        }
+        return;
+    }
+
+    if (g_environment_service.state != MASTER_ENV_IDLE)
+    {
+        if (MasterRuntime_QueueError(message->flow_id, MASTER_ERROR_BUSY) != 0U)
+        {
+            MasterRuntimeDiag.busy_reject_count++;
+        }
+        return;
+    }
     decision = MasterTemperature_EvaluateRead(&g_temperature_service,
                                               message->flow_id,
                                               message->payload[0],
@@ -698,7 +834,9 @@ static void MasterRuntime_HandleRead(const LoRaMessage *message,
     }
     else if (decision == MASTER_TEMP_READ_REQUEST_SLAVE)
     {
-        if (MasterRuntime_QueueSlaveRead(message->flow_id) != 0U)
+        if (MasterRuntime_QueueSlaveRead(LORA_MSG_READ_TEMP,
+                                         message->flow_id,
+                                         message->payload[0]) != 0U)
         {
             MasterTemperature_BeginSlaveRequest(&g_temperature_service,
                                                 message->flow_id,
@@ -723,6 +861,22 @@ static void MasterRuntime_HandleSlave(const LoRaMessage *message,
 {
     int16_t temperatures[LORA_PROTOCOL_TEMP_COUNT];
 
+    if (message->type == LORA_MSG_ENV_DATA)
+    {
+        if ((g_environment_service.state != MASTER_ENV_WAIT_SLAVE) ||
+            (g_environment_service.pending_flow_id != message->flow_id))
+        {
+            MasterRuntimeDiag.slave_environment_reject_count++;
+            return;
+        }
+        memcpy(g_environment_service.cache, message->payload,
+               LORA_PROTOCOL_ENV_PAYLOAD_SIZE);
+        g_environment_service.cache_tick = now_ms;
+        g_environment_service.cache_valid = 1U;
+        g_environment_service.state = MASTER_ENV_REPLY_PENDING;
+        MasterRuntimeDiag.slave_environment_accept_count++;
+        return;
+    }
     if (message->type != LORA_MSG_TEMP_36)
     {
         return;
@@ -738,6 +892,8 @@ static void MasterRuntime_HandleSlave(const LoRaMessage *message,
         return;
     }
 
+    g_slave_bme_temperature_x10 =
+        (int16_t)MasterRuntime_ReadU16(&message->payload[72]);
     MasterRuntimeDiag.temperature_accept_count++;
     memcpy(g_ui_snapshot.temperatures, temperatures,
            sizeof(g_ui_snapshot.temperatures));
@@ -762,7 +918,7 @@ static void MasterRuntime_ProcessPending(uint32_t now_ms)
                                           &flow_id,
                                           temperatures) != 0U)
     {
-        if (MasterRuntime_QueueTemperature(flow_id, temperatures) != 0U)
+        if (MasterRuntime_QueueTemperature(flow_id, temperatures, now_ms) != 0U)
         {
             MasterTemperature_CompletePending(&g_temperature_service);
         }
@@ -778,6 +934,33 @@ static void MasterRuntime_ProcessPending(uint32_t now_ms)
             MasterTemperature_CompletePending(&g_temperature_service);
         }
     }
+
+    if ((g_environment_service.state == MASTER_ENV_WAIT_SLAVE) &&
+        ((uint32_t)(now_ms - g_environment_service.request_tick) >=
+         MASTER_SLAVE_RESPONSE_TIMEOUT_MS))
+    {
+        g_environment_service.pending_error = MASTER_ERROR_SLAVE_TIMEOUT;
+        g_environment_service.state = MASTER_ENV_ERROR_PENDING;
+        MasterRuntimeDiag.slave_environment_timeout_count++;
+    }
+
+    if (g_environment_service.state == MASTER_ENV_REPLY_PENDING)
+    {
+        if (MasterRuntime_QueueEnvironment(
+                g_environment_service.pending_flow_id,
+                g_environment_service.cache, now_ms) != 0U)
+        {
+            g_environment_service.state = MASTER_ENV_IDLE;
+        }
+    }
+    else if (g_environment_service.state == MASTER_ENV_ERROR_PENDING)
+    {
+        if (MasterRuntime_QueueError(g_environment_service.pending_flow_id,
+                                     g_environment_service.pending_error) != 0U)
+        {
+            g_environment_service.state = MASTER_ENV_IDLE;
+        }
+    }
 }
 
 void MasterRuntime_Init(void)
@@ -788,6 +971,9 @@ void MasterRuntime_Init(void)
     memset(&MasterRuntimeDiag, 0, sizeof(MasterRuntimeDiag));
     memset(&g_ui_snapshot, 0, sizeof(g_ui_snapshot));
     memset(&g_pending_command, 0, sizeof(g_pending_command));
+    memset(&g_environment_service, 0, sizeof(g_environment_service));
+    memset(&g_environment_sample, 0, sizeof(g_environment_sample));
+    g_slave_bme_temperature_x10 = LORA_PROTOCOL_TEMPERATURE_INVALID;
     MasterTemperature_Init(&g_temperature_service);
     CommandService_Init(&g_command_service);
     AutoControl_Init(&g_auto_control);
@@ -830,6 +1016,27 @@ void MasterRuntime_ProcessOne(uint32_t now_ms, TickType_t wait_ticks)
 {
     MasterIngressRoute route;
 
+    if (MasterQueues_ReceiveEnvironment(&g_environment_sample) == pdPASS)
+    {
+        if (g_environment_sample.valid != 0U)
+        {
+            g_ui_snapshot.environment_temperature_x10 =
+                g_environment_sample.temperature_x10;
+            g_ui_snapshot.environment_humidity_x10 =
+                g_environment_sample.humidity_x10;
+            g_ui_snapshot.environment_pressure_pa =
+                g_environment_sample.pressure_pa;
+            g_ui_snapshot.environment_valid = 1U;
+            MasterRuntimeDiag.environment_accept_count++;
+        }
+        else
+        {
+            g_ui_snapshot.environment_valid = 0U;
+            MasterRuntimeDiag.environment_error_count++;
+        }
+        MasterRuntime_UpdateUi();
+    }
+
     if (MasterQueues_ReceiveEvent(&g_runtime_event, wait_ticks) == pdPASS)
     {
         if (g_runtime_event.type == MASTER_EVENT_LORA_MESSAGE)
@@ -839,7 +1046,8 @@ void MasterRuntime_ProcessOne(uint32_t now_ms, TickType_t wait_ticks)
             if (route == MASTER_INGRESS_CONTROL_ROOM)
             {
                 MasterRuntimeDiag.routed_control_count++;
-                if (g_runtime_event.data.lora_message.type == LORA_MSG_READ_TEMP)
+                if ((g_runtime_event.data.lora_message.type == LORA_MSG_READ_TEMP) ||
+                    (g_runtime_event.data.lora_message.type == LORA_MSG_READ_ENV))
                 {
                     MasterRuntime_HandleRead(&g_runtime_event.data.lora_message,
                                              now_ms);

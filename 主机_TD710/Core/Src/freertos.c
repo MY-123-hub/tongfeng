@@ -32,6 +32,7 @@
 #include "DGUS.h"
 #include "master_queues.h"
 #include "master_runtime.h"
+#include "BME280.h"
 
 /* USER CODE END Includes */
 
@@ -60,12 +61,15 @@ static uint32_t dgusTaskStack[128];
 static osStaticThreadDef_t dgusTaskControl;
 static uint32_t modBusTaskStack[256];
 static osStaticThreadDef_t modBusTaskControl;
+static uint32_t bme280TaskStack[256];
+static osStaticThreadDef_t bme280TaskControl;
 
 /* USER CODE END Variables */
 osThreadId defaultTaskHandle;
 osThreadId LoRaTaskHandle;
 osThreadId DGUSTaskHandle;
 osThreadId ModBusTaskHandle;
+osThreadId BME280TaskHandle;
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -76,6 +80,7 @@ void StartDefaultTask(void const * argument);
 void StartLoRaTask(void const * argument);
 void StartDGUSTask(void const * argument);
 void StartModBusTask(void const * argument);
+void StartBME280Task(void const * argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -145,8 +150,14 @@ void MX_FREERTOS_Init(void) {
                     modBusTaskStack, &modBusTaskControl);
   ModBusTaskHandle = osThreadCreate(osThread(ModBusTask), NULL);
 
+  /* definition and creation of BME280Task */
+  osThreadStaticDef(BME280Task, StartBME280Task, osPriorityLow, 0, 256,
+                    bme280TaskStack, &bme280TaskControl);
+  BME280TaskHandle = osThreadCreate(osThread(BME280Task), NULL);
+
   if ((defaultTaskHandle == NULL) || (LoRaTaskHandle == NULL) ||
-      (DGUSTaskHandle == NULL) || (ModBusTaskHandle == NULL))
+      (DGUSTaskHandle == NULL) || (ModBusTaskHandle == NULL) ||
+      (BME280TaskHandle == NULL))
   {
     Error_Handler();
   }
@@ -249,10 +260,16 @@ void StartDGUSTask(void const * argument)
       last_update_tick = HAL_GetTick();
       if (MasterQueues_PeekUi(&ui_snapshot) == pdPASS)
       {
-        /* 旧串口屏只有一个粮温字段，暂时显示36点中的第1点。
-           0表示无效；环境温湿度和风压按当前需求不采集、不刷新。 */
+        /* 旧串口屏只有一个粮温字段，暂时显示36点中的第1点。 */
         DGUS_WriteSingleData(DGUS_GrainTemp,
                              (int)ui_snapshot.temperatures[0]);
+        if (ui_snapshot.environment_valid != 0U)
+        {
+          DGUS_WriteSingleData(DGUS_EnvirTemp,
+                               (int)ui_snapshot.environment_temperature_x10);
+          DGUS_WriteSingleData(DGUS_EnvirHumi,
+                               (int)ui_snapshot.environment_humidity_x10);
+        }
       }
     }
     osDelay(20);
@@ -335,6 +352,105 @@ void StartModBusTask(void const * argument)
     osDelay(1);
   }
   /* USER CODE END StartModBusTask */
+}
+
+/* USER CODE BEGIN Header_StartBME280Task */
+/**
+* @brief BME280 environment sampling task. PB14=SCL, PB15=SDA.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartBME280Task */
+void StartBME280Task(void const * argument)
+{
+  /* USER CODE BEGIN StartBME280Task */
+  BME280_HandleTypeDef sensor;
+  BME280_Data sensor_data;
+  MasterEnvironmentSample sample;
+  BME280_Status status;
+  uint32_t measurement_delay_ms;
+
+  (void)argument;
+  memset(&sensor, 0, sizeof(sensor));
+  memset(&sensor_data, 0, sizeof(sensor_data));
+  memset(&sample, 0, sizeof(sample));
+
+  for(;;)
+  {
+    status = BME280_Init(&sensor);
+    if (status == BME280_OK)
+    {
+      status = BME280_Config(&sensor,
+                             BME280_OVERSAMPLING_X1,
+                             BME280_OVERSAMPLING_X1,
+                             BME280_OVERSAMPLING_X1,
+                             BME280_FILTER_OFF);
+    }
+
+    if (status != BME280_OK)
+    {
+      sample.valid = 0U;
+      sample.error_code = (uint8_t)status;
+      sample.sample_tick = HAL_GetTick();
+      (void)MasterQueues_OverwriteEnvironment(&sample);
+      osDelay(1000U);
+      continue;
+    }
+
+    measurement_delay_ms = BME280_GetMeasurementDelayMs(&sensor);
+    for(;;)
+    {
+      status = BME280_TriggerMeasurement(&sensor);
+      if (status == BME280_OK)
+      {
+        osDelay(measurement_delay_ms);
+        status = BME280_ReadMeasurement(&sensor, &sensor_data);
+      }
+
+      memset(&sample, 0, sizeof(sample));
+      sample.sample_tick = HAL_GetTick();
+      sample.error_code = (uint8_t)status;
+      if ((status == BME280_OK) &&
+          (sensor_data.temperature_x100 >= -4000) &&
+          (sensor_data.temperature_x100 <= 8500) &&
+          (sensor_data.humidity_x1024 <= 102400U) &&
+          (sensor_data.pressure_pa >= 30000U) &&
+          (sensor_data.pressure_pa <= 110000U))
+      {
+        if (sensor_data.temperature_x100 >= 0)
+        {
+          sample.temperature_x10 =
+              (int16_t)((sensor_data.temperature_x100 + 5) / 10);
+        }
+        else
+        {
+          sample.temperature_x10 =
+              (int16_t)((sensor_data.temperature_x100 - 5) / 10);
+        }
+        sample.humidity_x10 = (uint16_t)(
+            (sensor_data.humidity_x1024 * 10U + 512U) / 1024U);
+        sample.pressure_pa = sensor_data.pressure_pa;
+        sample.valid = 1U;
+      }
+      else
+      {
+        sample.valid = 0U;
+        if (status == BME280_OK)
+        {
+          sample.error_code = (uint8_t)BME280_ERROR_NOT_READY;
+        }
+      }
+      (void)MasterQueues_OverwriteEnvironment(&sample);
+
+      if (sample.valid == 0U)
+      {
+        osDelay(1000U);
+        break;
+      }
+      osDelay(1000U);
+    }
+  }
+  /* USER CODE END StartBME280Task */
 }
 
 /* Private application code --------------------------------------------------*/

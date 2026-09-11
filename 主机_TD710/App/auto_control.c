@@ -56,11 +56,13 @@ AutoDecision AutoControl_Step(AutoControlState *state,
     {
         int16_t temperature = temperatures_x10[index];
 
-        if ((temperature != 0) && (temperature > target_x10))
+        if ((temperature != LORA_PROTOCOL_TEMPERATURE_INVALID) &&
+            (temperature > target_x10))
         {
             any_high = 1U;
         }
-        if ((temperature == 0) || (temperature > stop_threshold))
+        if ((temperature == LORA_PROTOCOL_TEMPERATURE_INVALID) ||
+            (temperature > stop_threshold))
         {
             all_low = 0U;
         }

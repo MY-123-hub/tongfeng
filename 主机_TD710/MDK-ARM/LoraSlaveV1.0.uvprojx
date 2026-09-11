@@ -404,6 +404,11 @@
               <FilePath>../Core/Src/gpio.c</FilePath>
             </File>
             <File>
+              <FileName>BME280.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/BME280.c</FilePath>
+            </File>
+            <File>
               <FileName>freertos.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/freertos.c</FilePath>

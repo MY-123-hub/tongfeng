@@ -1,7 +1,7 @@
 /**
  * @file    bme280.h
  * @brief   BME280 温湿度气压传感器驱动 (STM32 HAL I2C)
- * @note    适配 STM32F103C8T6，I2C2: PB10-SCL, PB11-SDA
+ * @note    适配 STM32F103C8T6，I2C1: PB6-SCL, PB7-SDA
  */
 
 #ifndef __BME280_H__

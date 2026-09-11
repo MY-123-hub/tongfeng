@@ -1,4 +1,5 @@
 # Keil MDK-ARM build outputs
+*.obj
 *.o
 *.d
 *.crf

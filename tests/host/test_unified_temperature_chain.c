@@ -96,7 +96,8 @@ int main(void)
     uint8_t master_frame[LORA_PROTOCOL_MAX_FRAME_SIZE];
     uint16_t master_frame_length;
     uint16_t sample_flow_id;
-    int16_t temperatures[LORA_PROTOCOL_TEMP_COUNT] = {0};
+    SlaveTelemetrySnapshot snapshot;
+    uint32_t index;
 
     assert(MasterQueues_Init() == 1U);
     FakeParameterStore_Reset();
@@ -104,6 +105,17 @@ int main(void)
     MasterRuntime_Init();
     SlaveRuntime_Init(1U);
     GatewayRuntime_Init(Test_GatewaySend, NULL);
+    memset(&snapshot, 0, sizeof(snapshot));
+    for (index = 0U; index < LORA_PROTOCOL_TEMP_COUNT; index++)
+    {
+        snapshot.node_temperature_x10[index] = SLAVE_TEMPERATURE_INVALID_X10;
+        snapshot.node_humidity_x10[index] = SLAVE_HUMIDITY_INVALID_X10;
+    }
+    snapshot.slave_bme_temperature_x10 = 205;
+    snapshot.slave_bme_humidity_x10 = 550U;
+    snapshot.slave_bme_pressure_pa = 100000UL;
+    snapshot.rain_value = SLAVE_RAIN_VALUE_UNAVAILABLE;
+    snapshot.node_humidity_x10[0] = 456U;
 
     /* 控制室发起M1温度轮询，flow由控制室创建。 */
     GatewayRuntime_Process(0U);
@@ -126,7 +138,7 @@ int main(void)
     assert(master_output.destination_role == LORA_ROLE_SLAVE);
     assert(master_output.destination_group == 1U);
     assert(master_output.flow_id == message.flow_id);
-    assert(master_output.payload[0] == 1U);
+    assert(master_output.payload[0] == 0U);
     assert(LoRaProtocol_Encode(&master_output,
                                master_frame,
                                sizeof(master_frame),
@@ -137,9 +149,9 @@ int main(void)
     SlaveRuntime_Process(100U);
     assert(SlaveRuntime_TakeSampleRequest(&sample_flow_id) == 1U);
     assert(sample_flow_id == message.flow_id);
-    temperatures[0] = 250;
-    temperatures[35] = -55;
-    SlaveRuntime_CompleteSample(sample_flow_id, temperatures);
+    snapshot.node_temperature_x10[0] = 250;
+    snapshot.node_temperature_x10[35] = -55;
+    SlaveRuntime_CompleteSample(sample_flow_id, &snapshot);
     SlaveRuntime_Process(149U);
     assert(g_slave_frame_count == 0U);
     SlaveRuntime_Process(150U);
@@ -164,6 +176,10 @@ int main(void)
     assert(master_output.payload[1] == 0x00U);
     assert(master_output.payload[70] == 0xC9U);
     assert(master_output.payload[71] == 0xFFU);
+    assert(master_output.payload[72] == 0xCDU);
+    assert(master_output.payload[73] == 0x00U);
+    assert(master_output.payload[74] == 0x00U);
+    assert(master_output.payload[75] == 0x80U);
     assert(LoRaProtocol_Encode(&master_output,
                                master_frame,
                                sizeof(master_frame),
@@ -182,6 +198,67 @@ int main(void)
     assert(pc_output.flow_id == 0x8000U);
     assert(memcmp(pc_output.payload, master_output.payload,
                   LORA_PROTOCOL_TEMP_PAYLOAD_SIZE) == 0);
+
+    /* 下一事务是同组独立环境帧，并注入主机本机BME字段。 */
+    GatewayRuntime_Process(1000U);
+    assert(g_gateway_lora_count == 2U);
+    assert(LoRaProtocol_Decode(g_gateway_lora_frame,
+                               g_gateway_lora_length,
+                               &message) == LORA_PROTOCOL_OK);
+    assert(message.type == LORA_MSG_READ_ENV);
+    assert(message.flow_id == 0x8001U);
+    {
+        MasterEnvironmentSample master_bme;
+        memset(&master_bme, 0, sizeof(master_bme));
+        master_bme.temperature_x10 = 220;
+        master_bme.humidity_x10 = 600U;
+        master_bme.pressure_pa = 101000UL;
+        master_bme.sample_tick = 1000U;
+        master_bme.valid = 1U;
+        assert(MasterQueues_OverwriteEnvironment(&master_bme) == pdPASS);
+    }
+    Test_PushMasterMessage(&message);
+    MasterRuntime_ProcessOne(1010U, 0U);
+    assert(MasterQueues_ReceiveLoRa(&master_output, 0U) == pdPASS);
+    assert(master_output.type == LORA_MSG_READ_ENV);
+    assert(LoRaProtocol_Encode(&master_output, master_frame,
+                               sizeof(master_frame),
+                               &master_frame_length) == LORA_PROTOCOL_OK);
+
+    Test_PushSlaveFrame(master_frame, master_frame_length);
+    SlaveRuntime_Process(1100U);
+    assert(SlaveRuntime_TakeSampleRequest(&sample_flow_id) == 0U);
+    SlaveRuntime_Process(1150U);
+    assert(g_slave_frame_count == 2U);
+    assert(LoRaProtocol_Decode(g_slave_frame, g_slave_frame_length,
+                               &message) == LORA_PROTOCOL_OK);
+    assert(message.type == LORA_MSG_ENV_DATA);
+    assert(message.payload[0] == 0xC8U && message.payload[1] == 0x01U);
+    assert(message.payload[84] == 0xFFU && message.payload[85] == 0xFFU);
+
+    Test_PushMasterMessage(&message);
+    MasterRuntime_ProcessOne(1200U, 0U);
+    assert(MasterQueues_ReceiveLoRa(&master_output, 0U) == pdPASS);
+    assert(master_output.type == LORA_MSG_ENV_DATA);
+    assert(master_output.payload[74] == 0x58U);
+    assert(master_output.payload[75] == 0x02U);
+    assert(master_output.payload[80] == 0x88U);
+    assert(master_output.payload[81] == 0x8AU);
+    assert(master_output.payload[82] == 0x01U);
+    assert(master_output.payload[83] == 0x00U);
+    assert(master_output.payload[84] == 0xFFU &&
+           master_output.payload[85] == 0xFFU);
+    assert(LoRaProtocol_Encode(&master_output, master_frame,
+                               sizeof(master_frame),
+                               &master_frame_length) == LORA_PROTOCOL_OK);
+    Test_PushGatewayLoRaFrame(master_frame, master_frame_length);
+    GatewayRuntime_Process(1250U);
+    assert(g_gateway_pc_count == 2U);
+    assert(g_gateway_pc_length == 99U);
+    assert(LoRaProtocol_Decode(g_gateway_pc_frame,
+                               g_gateway_pc_length,
+                               &pc_output) == LORA_PROTOCOL_OK);
+    assert(pc_output.type == LORA_MSG_ENV_DATA);
 
     puts("unified_temperature_chain: PASS");
     return 0;

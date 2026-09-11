@@ -106,7 +106,7 @@ int main(void)
 
   led1_off();
   led2_off();
-  /* 当前只联调一套固件，应用层组号固定为1；拨码开关在全链路稳定后再启用。 */
+  /* 当前联调固定为 M1；拨码组号功能待 M1 链路跑通后再恢复。 */
   MasterIdentity_Init(1U);
   LORA_Init();      // LORA 参数初始化
   /* USER CODE END 2 */

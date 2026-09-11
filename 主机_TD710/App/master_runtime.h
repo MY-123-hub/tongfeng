@@ -14,6 +14,11 @@ typedef struct
     uint32_t temperature_accept_count;
     uint32_t temperature_reject_count;
     uint32_t temperature_timeout_count;
+    uint32_t environment_accept_count;
+    uint32_t environment_error_count;
+    uint32_t slave_environment_accept_count;
+    uint32_t slave_environment_reject_count;
+    uint32_t slave_environment_timeout_count;
     uint32_t busy_reject_count;
     uint32_t lora_queue_failure_count;
     uint32_t command_accept_count;

@@ -68,6 +68,10 @@ void Error_Handler(void);
 #define LORA_RELOAD_GPIO_Port GPIOB
 #define LORA_RESET_Pin GPIO_PIN_7
 #define LORA_RESET_GPIO_Port GPIOB
+#define BME280_SCL_Pin GPIO_PIN_14
+#define BME280_SCL_GPIO_Port GPIOB
+#define BME280_SDA_Pin GPIO_PIN_15
+#define BME280_SDA_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

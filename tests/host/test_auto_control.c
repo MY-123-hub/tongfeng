@@ -36,7 +36,7 @@ static void TestStartRuleScansPastInvalid(void)
     int16_t temperatures[LORA_PROTOCOL_TEMP_COUNT];
 
     AutoControl_Init(&state);
-    Fill(temperatures, 0);
+    Fill(temperatures, LORA_PROTOCOL_TEMPERATURE_INVALID);
     temperatures[35] = MASTER_DEFAULT_TARGET_TEMP_X10 + 1;
     CHECK(AutoControl_Step(&state, MASTER_CONTROL_MODE_AUTO,
                            temperatures, LORA_PROTOCOL_TEMP_COUNT, 1U,
@@ -88,7 +88,7 @@ static void TestStopHoldAndReset(void)
           AUTO_DECISION_HOLD);
     CHECK(state.low_since_ms == 70001U);
 
-    temperatures[0] = 0;
+    temperatures[0] = LORA_PROTOCOL_TEMPERATURE_INVALID;
     CHECK(AutoControl_Step(&state, MASTER_CONTROL_MODE_AUTO,
                            temperatures, LORA_PROTOCOL_TEMP_COUNT, 1U,
                            MASTER_DEFAULT_TARGET_TEMP_X10, 80000U) ==

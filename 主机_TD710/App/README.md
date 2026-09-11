@@ -15,6 +15,8 @@ USART2 ISR -> 256B环形缓冲 -> LoRaTask拆帧 -> q_master_event
                                   LoRaTask      ModBusTask      DGUSTask
                                       |            |
                                    USART2        USART3/TD710
+
+PB14/PB15 -> BME280Task -> q_environment -> MasterRuntime -> q_ui_snapshot
 ```
 
 `MasterRuntime` 是业务状态的唯一写入者。LoRa 和 Modbus 任务只负责收发与产生结构化事件，不直接改控制模式、风机状态或温度缓存。
@@ -27,8 +29,9 @@ USART2 ISR -> 256B环形缓冲 -> LoRaTask拆帧 -> q_master_event
 | `q_lora_tx` | 4 | `LoRaMessage` | MasterRuntime -> LoRaTask | 业务状态保持待发，后续周期重试 |
 | `q_vfd_job` | 3 | `VfdJob` | MasterRuntime -> ModBusTask | 命令返回忙；手动停机使用队首插入 |
 | `q_ui_snapshot` | 1 | `MasterUiSnapshot` | MasterRuntime -> DGUSTask | `xQueueOverwrite`，始终保留最新快照 |
+| `q_environment` | 1 | `MasterEnvironmentSample` | BME280Task -> MasterRuntime | `xQueueOverwrite`，只保留最新环境数据 |
 
-四个队列均由 `xQueueCreateStatic` 创建，元素整体深拷贝，不在队列中传递栈指针。
+五个队列均由 `xQueueCreateStatic` 创建，元素整体深拷贝，不在队列中传递栈指针。
 
 ## 3. 任务布局
 
@@ -38,6 +41,7 @@ USART2 ISR -> 256B环形缓冲 -> LoRaTask拆帧 -> q_master_event
 | `ModBusTask` | AboveNormal | 256 | TD710 单事务异步状态机、结果入队 |
 | `defaultTask` | Normal | 256 | 主控状态机、命令去重、自动通风、Flash保存 |
 | `DGUSTask` | Low | 128 | 本地屏触摸和最新快照显示 |
+| `BME280Task` | Low | 256 | PB14/PB15软件I²C、每秒一次强制测量、环境数据入队 |
 
 栈数值为 CubeMX/CMSIS-RTOS 配置值。真实栈高水位必须在上板长时运行后再确认。
 
@@ -52,6 +56,7 @@ USART2 ISR -> 256B环形缓冲 -> LoRaTask拆帧 -> q_master_event
 - `auto_control`：任意有效点高于目标立即启动；36点全部有效且不高于“目标-0.5℃”连续60s才停机。
 - `vfd_modbus_codec`：TD710 功能码 `10`、寄存器 `2000`的纯C编解码。
 - `parameter_record`：32B、CRC32、generation反码和双提交标志。
+- `BME280`：PB14=SCL、PB15=SDA的软件I²C驱动，自动探测0x76/0x77并采集环境温度、湿度和气压（Pa）。
 - `master_runtime`：组合上述纯逻辑，是模式、参数、温度和风机确认状态的唯一写入者。
 
 ## 5. 集中可调参数

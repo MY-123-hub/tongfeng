@@ -6,6 +6,8 @@
 
 /* 现场可调参数：首次联调后按实际轮询周期和空口延迟复核。 */
 #define MASTER_TEMP_CACHE_FRESH_MS               (5000UL)
+#define MASTER_ENV_CACHE_FRESH_MS                (5000UL)
+#define MASTER_BME_CACHE_FRESH_MS                (2000UL)
 #define MASTER_SLAVE_RESPONSE_TIMEOUT_MS         (3000UL)
 
 #define MASTER_DEFAULT_FREQUENCY_X100            (3000U)
