@@ -255,9 +255,17 @@ void StartDGUSTask(void const * argument)
   uint32_t boot_tick = HAL_GetTick();
   static uint8_t temperature_sent;
   static uint8_t humidity_sent;
+  static uint8_t master_temperature_sent;
+  static uint8_t master_humidity_sent;
+  static uint8_t slave_pressure_sent;
+  static uint8_t master_pressure_sent;
   static uint8_t fan_state_sent;
   static uint16_t last_temperature_x10;
   static uint16_t last_humidity_x10;
+  static int16_t last_master_temperature_x10;
+  static uint16_t last_master_humidity_x10;
+  static uint16_t last_slave_pressure_hpa;
+  static uint16_t last_master_pressure_hpa;
   static uint16_t last_fan_state;
   static uint32_t last_uptime_minute = 0xFFFFFFFFUL;
   static uint8_t initial_setpoint_read_requested;
@@ -300,6 +308,10 @@ void StartDGUSTask(void const * argument)
           last_screen_refresh_tick = now_tick;
           temperature_sent = 0U;
           humidity_sent = 0U;
+          master_temperature_sent = 0U;
+          master_humidity_sent = 0U;
+          slave_pressure_sent = 0U;
+          master_pressure_sent = 0U;
           fan_state_sent = 0U;
           last_uptime_minute = 0xFFFFFFFFUL;
         }
@@ -325,6 +337,65 @@ void StartDGUSTask(void const * argument)
         uptime_ascii[13] = (uint8_t)':';
         uptime_ascii[14] = (uint8_t)('0' + (minute_of_hour / 10U));
         uptime_ascii[15] = (uint8_t)('0' + (minute_of_hour % 10U));
+
+        /* BME280 values physically connected to the master itself. */
+        if ((ui_snapshot.environment_valid != 0U) &&
+            ((master_temperature_sent == 0U) ||
+             (last_master_temperature_x10 !=
+              ui_snapshot.environment_temperature_x10)))
+        {
+          if (DGUS_WriteSingleData(DGUS_VP_MASTER_TEMPERATURE,
+              (uint16_t)ui_snapshot.environment_temperature_x10) != 0U)
+          {
+            last_master_temperature_x10 =
+              ui_snapshot.environment_temperature_x10;
+            master_temperature_sent = 1U;
+          }
+        }
+        if ((ui_snapshot.environment_valid != 0U) &&
+            ((master_humidity_sent == 0U) ||
+             (last_master_humidity_x10 !=
+              ui_snapshot.environment_humidity_x10)))
+        {
+          if (DGUS_WriteSingleData(DGUS_VP_MASTER_HUMIDITY,
+              ui_snapshot.environment_humidity_x10) != 0U)
+          {
+            last_master_humidity_x10 = ui_snapshot.environment_humidity_x10;
+            master_humidity_sent = 1U;
+          }
+        }
+        /* Pressure is received as Pa but a DGUS VP is one 16-bit word.
+           Publish hPa (Pa / 100): normal atmospheric pressure is 1013. */
+        if (ui_snapshot.slave_environment_pressure_valid != 0U)
+        {
+          uint16_t pressure_hpa =
+              (uint16_t)(ui_snapshot.slave_environment_pressure_pa / 100UL);
+          if ((slave_pressure_sent == 0U) ||
+              (last_slave_pressure_hpa != pressure_hpa))
+          {
+            if (DGUS_WriteSingleData(DGUS_VP_SLAVE_PRESSURE,
+                                     pressure_hpa) != 0U)
+            {
+              last_slave_pressure_hpa = pressure_hpa;
+              slave_pressure_sent = 1U;
+            }
+          }
+        }
+        if (ui_snapshot.environment_valid != 0U)
+        {
+          uint16_t pressure_hpa =
+              (uint16_t)(ui_snapshot.environment_pressure_pa / 100UL);
+          if ((master_pressure_sent == 0U) ||
+              (last_master_pressure_hpa != pressure_hpa))
+          {
+            if (DGUS_WriteSingleData(DGUS_VP_MASTER_PRESSURE,
+                                     pressure_hpa) != 0U)
+            {
+              last_master_pressure_hpa = pressure_hpa;
+              master_pressure_sent = 1U;
+            }
+          }
+        }
 
         if ((ui_snapshot.temperature_valid != 0U) &&
             ((temperature_sent == 0U) ||

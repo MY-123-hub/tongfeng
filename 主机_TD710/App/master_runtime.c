@@ -127,6 +127,14 @@ static uint8_t MasterRuntime_BmeIsFresh(uint32_t now_ms)
              MASTER_BME_CACHE_FRESH_MS)) ? 1U : 0U;
 }
 
+static uint32_t MasterRuntime_ReadU32(const uint8_t *payload)
+{
+    return (uint32_t)payload[0] |
+           ((uint32_t)payload[1] << 8U) |
+           ((uint32_t)payload[2] << 16U) |
+           ((uint32_t)payload[3] << 24U);
+}
+
 static uint16_t MasterRuntime_AverageTemperature(const int16_t *temperatures)
 {
     int32_t sum = 0;
@@ -1140,6 +1148,11 @@ static void MasterRuntime_HandleSlave(const LoRaMessage *message,
                LORA_PROTOCOL_ENV_PAYLOAD_SIZE);
         g_average_humidity_x10 = MasterRuntime_AverageHumidity(
             message->payload, &g_humidity_valid);
+        g_ui_snapshot.slave_environment_pressure_pa =
+            MasterRuntime_ReadU32(&message->payload[76]);
+        g_ui_snapshot.slave_environment_pressure_valid =
+            (g_ui_snapshot.slave_environment_pressure_pa !=
+             LORA_PROTOCOL_PRESSURE_INVALID) ? 1U : 0U;
         if (g_humidity_valid != 0U)
         {
             g_humidity_tick = now_ms;

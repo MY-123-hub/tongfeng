@@ -104,11 +104,13 @@ typedef struct
     uint16_t frequency_x100;
     uint16_t environment_humidity_x10;
     uint32_t environment_pressure_pa;
+    uint32_t slave_environment_pressure_pa;
     uint8_t control_mode;
     uint8_t fan_state;
     uint8_t temperature_valid;
     uint8_t humidity_valid;
     uint8_t environment_valid;
+    uint8_t slave_environment_pressure_valid;
     uint8_t target_humidity_configured;
     uint8_t schedule_enabled;
     /* Incremented only for a control-room setpoint update. */
