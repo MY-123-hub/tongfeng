@@ -157,15 +157,16 @@ static uint8_t Sensor_HasAnyDetected(void)
 /* 按 ROM 家族码调用对应驱动，读取或 CRC 失败时返回无效。 */
 static uint8_t Sensor_ReadOneTemperature(GPIO_TypeDef *port, uint16_t pin,
                                          uint8_t channel, uint8_t sensor_index,
-                                         float *temperature)
+                                         float *temperature, float *humidity,
+                                         uint8_t *humidity_valid)
 {
-    float humidity = 0.0f;
-
-    if (temperature == NULL)
+    if ((temperature == NULL) || (humidity == NULL) || (humidity_valid == NULL))
     {
         return 0U;
     }
     *temperature = 0.0f;
+    *humidity = 0.0f;
+    *humidity_valid = 0U;
     if (DS18B20_ID[channel][sensor_index][0] == 0x28U)
     {
         *temperature = DS18B20_Read_Temp(port, pin, channel, sensor_index);
@@ -173,7 +174,12 @@ static uint8_t Sensor_ReadOneTemperature(GPIO_TypeDef *port, uint16_t pin,
     }
     if (DS18B20_ID[channel][sensor_index][0] == 0x2CU)
     {
-        return GXHT3W_Read_TempHum(port, pin, channel, sensor_index, temperature, &humidity);
+        if (GXHT3W_Read_TempHum(port, pin, channel, sensor_index,
+                                temperature, humidity) != 0U)
+        {
+            *humidity_valid = 1U;
+            return 1U;
+        }
     }
     return 0U;
 }
@@ -225,12 +231,14 @@ static void Sensor_Convert_All(void)
 }
 
 /* 读取 36 点；未接、ROM/数据 CRC 失败和 0.0℃ 均按协议填 00 00。 */
-static void Sensor_Read_AllTemperatures(int16_t temperatures[36])
+static uint16_t Sensor_Read_AllSensors(int16_t temperatures[36])
 {
     uint8_t channel, sen_idx;
+    uint32_t humidity_sum_x10 = 0U;
+    uint16_t humidity_count = 0U;
     if (temperatures == NULL)
     {
-        return;
+        return 0xFFFFU;
     }
     memset(temperatures, 0, sizeof(int16_t) * SENSOR_TOTAL_POINT_COUNT);
 
@@ -243,10 +251,16 @@ static void Sensor_Read_AllTemperatures(int16_t temperatures[36])
         for (sen_idx = 0U; (sen_idx < Sensor_BoundedCount(channel)) &&
              (real_count < SENSOR_POINTS_PER_PORT); sen_idx++) {
             float temperature = 0.0f;
+            float humidity = 0.0f;
             int16_t deci_celsius;
+            uint8_t humidity_valid;
+            uint8_t read_success;
             if (is_ghost_id(channel, sen_idx)) continue;
 
-            if ((Sensor_ReadOneTemperature(port, pin, channel, sen_idx, &temperature) != 0U) &&
+            read_success = Sensor_ReadOneTemperature(port, pin, channel, sen_idx,
+                                                      &temperature, &humidity,
+                                                      &humidity_valid);
+            if ((read_success != 0U) &&
                 (Sensor_ToDeciCelsius(temperature, &deci_celsius) != 0U))
             {
                 temperatures[point + real_count] = deci_celsius;
@@ -254,6 +268,12 @@ static void Sensor_Read_AllTemperatures(int16_t temperatures[36])
             else
             {
                 s_sensor_read_failure_count++;
+            }
+            if ((read_success != 0U) && (humidity_valid != 0U) &&
+                (humidity >= 0.0f) && (humidity <= 100.0f))
+            {
+                humidity_sum_x10 += (uint32_t)(humidity * 10.0f + 0.5f);
+                humidity_count++;
             }
 #if DEBUG_LOG
             printf("[D] ch%d[%d] fam=0x%02X T=%.2f\r\n",
@@ -263,6 +283,9 @@ static void Sensor_Read_AllTemperatures(int16_t temperatures[36])
             real_count++;
         }
     }
+    return (humidity_count == 0U) ? 0xFFFFU :
+           (uint16_t)((humidity_sum_x10 + (uint32_t)(humidity_count / 2U)) /
+                      humidity_count);
 }
 /* USER CODE END 0 */
 
@@ -356,8 +379,9 @@ int main(void)
     if ((s_sample_active != 0U) && ((uint32_t)(now - s_sample_ready_tick) < 0x80000000UL))
     {
       int16_t temperatures[SENSOR_TOTAL_POINT_COUNT];
-      Sensor_Read_AllTemperatures(temperatures);
-      SlaveRuntime_CompleteSample(s_sample_flow_id, temperatures);
+      uint16_t average_humidity_x10 = Sensor_Read_AllSensors(temperatures);
+      SlaveRuntime_CompleteSensorSample(s_sample_flow_id, temperatures,
+                                        average_humidity_x10);
       s_sample_active = 0U;
     }
 

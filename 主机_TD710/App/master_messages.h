@@ -20,7 +20,8 @@ typedef enum
 {
     MASTER_EVENT_NONE = 0,
     MASTER_EVENT_LORA_MESSAGE,
-    MASTER_EVENT_VFD_RESULT
+    MASTER_EVENT_VFD_RESULT,
+    MASTER_EVENT_DGUS_WRITE
 } MasterEventType;
 
 typedef enum
@@ -73,6 +74,11 @@ typedef struct
     {
         LoRaMessage lora_message;
         VfdResult vfd_result;
+        struct
+        {
+            uint16_t address;
+            uint16_t value;
+        } dgus_write;
     } data;
 } MasterEvent;
 
@@ -80,10 +86,20 @@ typedef struct
 {
     int16_t temperatures[LORA_PROTOCOL_TEMP_COUNT];
     int16_t target_temperature_x10;
+    uint16_t average_temperature_x10;
+    uint16_t average_humidity_x10;
+    uint16_t target_humidity_x10;
+    uint16_t uptime_words[5];
+    uint16_t plan_start_words[5];
+    uint16_t plan_end_words[5];
     uint16_t frequency_x100;
     uint8_t control_mode;
     uint8_t fan_state;
     uint8_t temperature_valid;
+    uint8_t humidity_valid;
+    uint8_t target_humidity_configured;
+    uint8_t schedule_enabled;
+    uint32_t target_temperature_screen_generation;
 } MasterUiSnapshot;
 
 #endif /* MASTER_MESSAGES_H */

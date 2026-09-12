@@ -23,7 +23,12 @@ static uint8_t ParameterStore_Equal(const MasterParameters *left,
 {
     return ((left->frequency_x100 == right->frequency_x100) &&
             (left->target_temperature_x10 == right->target_temperature_x10) &&
-            (left->control_mode == right->control_mode)) ? 1U : 0U;
+            (left->control_mode == right->control_mode) &&
+            (left->target_humidity_x10 == right->target_humidity_x10) &&
+            (left->target_humidity_configured == right->target_humidity_configured) &&
+            (left->schedule_enabled == right->schedule_enabled) &&
+            (memcmp(&left->plan_start, &right->plan_start, sizeof(left->plan_start)) == 0) &&
+            (memcmp(&left->plan_end, &right->plan_end, sizeof(left->plan_end)) == 0)) ? 1U : 0U;
 }
 
 ParameterStoreStatus ParameterStore_Load(MasterParameters *parameters)
@@ -50,7 +55,10 @@ ParameterStoreStatus ParameterStore_Load(MasterParameters *parameters)
 
     g_current_parameters.frequency_x100 = MASTER_DEFAULT_FREQUENCY_X100;
     g_current_parameters.target_temperature_x10 = MASTER_DEFAULT_TARGET_TEMP_X10;
+    g_current_parameters.target_humidity_x10 = MASTER_DEFAULT_TARGET_HUMIDITY_X10;
     g_current_parameters.control_mode = MASTER_CONTROL_MODE_AUTO;
+    g_current_parameters.target_humidity_configured = 0U;
+    g_current_parameters.schedule_enabled = 0U;
     g_generation = 0U;
     g_active_slot = 0U;
     g_has_active_record = 0U;

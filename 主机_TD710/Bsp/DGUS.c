@@ -1,167 +1,177 @@
 ﻿#include "DGUS.h"
 
+#include <string.h>
 
-uint16_t DGUS_cntPre = 0;
+static DGUSReceivedWrite g_writes[5];
+static uint8_t g_write_count;
+static uint8_t g_write_index;
 
-
-/*****************************************************
-  * 函数名称：	DGUS_Clear
-  * 函数功能：	清空缓存
-  * 入口参数：	无
-  * 返回参数：	无
-  * 说    明：  无
-*****************************************************/
-void DGUS_Clear(void)
+static void DGUS_ClearRx(void)
 {
-	uint32_t primask = __get_PRIMASK();
+    uint32_t primask = __get_PRIMASK();
 
-	__disable_irq();
-	memset(Rx1Buffer, 0, sizeof(Rx1Buffer));
-	rx1_pointer = 0;
-	rx1_frame_ready = 0;
-	rx1_overflow = 0;
-	DGUS_cntPre = 0;
-	if (primask == 0U)
-	{
-		__enable_irq();
-	}
-}
-
-
-/*****************************************************
-  * 函数名称：	DGUS_WaitRecive
-  * 函数功能：	等待接收完成
-  * 入口参数：	无
-  * 返回参数：	REV_OK-接收完成		REV_WAIT-接收超时未完成
-  * 说    明：  循环调用检测是否接收完成
-*****************************************************/
-_Bool DGUS_WaitRecive(void)
-{
-	if (rx1_overflow != 0U)
-	{
-		DGUS_Clear();
-		return REV_WAIT;
-	}
-	if (rx1_frame_ready != 0U)
-	{
-		return REV_OK;
-	}
-	if(rx1_pointer == 0) 							//如果接收计数为0 则说明没有处于接收数据中，所以直接跳出，结束函数
-		return REV_WAIT;
-	if(rx1_pointer == DGUS_cntPre)				//如果上一次的值和这次相同，则说明接收完毕
-	{
-    HAL_Delay(5);   // 确保接受数据完整性
-    if(rx1_pointer == DGUS_cntPre)				//如果上一次的值和这次相同，则说明接收完毕
+    __disable_irq();
+    memset(Rx1Buffer, 0, sizeof(Rx1Buffer));
+    rx1_pointer = 0U;
+    rx1_frame_ready = 0U;
+    rx1_overflow = 0U;
+    if (primask == 0U)
     {
-	  rx1_frame_ready = 1;						// 冻结当前帧，防止解析期间被中断覆盖
-      return REV_OK;								//返回接收完成标志
+        __enable_irq();
     }
-	}
-	DGUS_cntPre = rx1_pointer;					//置为相同
-    return REV_WAIT;								//返回接收未完成标志
 }
 
-
-/*****************************************************
-  * 函数名称：	DGUS_SendCmd
-  * 函数功能：	向 DGUS 某个变量空间（0x0000-0xFFFF）写入数据
-  * 入口参数：	Addr：写入地址（2字节）
-                Data：数据（2字节）
-  * 返回参数：	0-成功	1-失败
-  * 说明：		
-*****************************************************/
-void DGUS_WriteSingleData(int S_Addr,int Data)
+uint8_t DGUS_IsScreenFlashControlAddress(uint16_t address)
 {
-  char Com_all[16]={0x5A,0xA5,0x05,0x82,S_Addr/256,S_Addr%256,Data/256,Data%256};
-
-  Usart_SendString(huart1, (unsigned char *)Com_all, 8);
+    return ((address == 0x5030U) || (address == 0x5040U) ||
+            (address == 0x5050U) || (address == 0x5060U)) ? 1U : 0U;
 }
 
-
-/*****************************************************
-  * 函数名称：	DGUS_TouchAck
-  * 函数功能：	DGUS 触摸数据应答
-  * 入口参数：	无
-  * 返回参数：	无
-  * 说    明：	无
-*****************************************************/
-void DGUS_TouchAck(void)
+uint8_t DGUS_WriteWords(uint16_t address, const uint16_t *words, uint8_t count)
 {
-  if ((DGUS_WaitRecive() == REV_OK) && (rx1_pointer >= 6U) &&
-      ((uint16_t)rx1_pointer >= ((uint16_t)Rx1Buffer[2] + 3U)) &&
-      (Rx1Buffer[0] == 0x5A) && (Rx1Buffer[1] == 0xA5) &&
-      (Rx1Buffer[3] == 0x83))
-  {
-    switch ((uint16_t)((Rx1Buffer[4] << 8) | Rx1Buffer[5]))
+    uint8_t frame[3U + 3U + 2U * DGUS_MAX_WRITE_WORDS];
+    uint8_t index;
+    uint8_t length;
+
+    if ((words == NULL) || (count == 0U) || (count > DGUS_MAX_WRITE_WORDS) ||
+        (DGUS_IsScreenFlashControlAddress(address) != 0U))
     {
-      case 0x2900:
-      {
-        DGUS_Clear();
-        char Com_all[20]={0x5A,0xA5,0x09,0x82,0x29,0x00,0x00,0x01,0x00,0x00,0x00,0x00};
-        Usart_SendString(huart1, (unsigned char *)Com_all, 13);
-      } break;
-      case 0x2901:
-      {
-        DGUS_Clear();
-        char Com_all[20]={0x5A,0xA5,0x09,0x82,0x29,0x00,0x00,0x00,0x00,0x01,0x00,0x00};
-        Usart_SendString(huart1, (unsigned char *)Com_all, 13);
-      } break;
-      case 0x2902:
-      {
-        DGUS_Clear();
-        char Com_all[20]={0x5A,0xA5,0x09,0x82,0x29,0x00,0x00,0x00,0x00,0x00,0x00,0x01};
-        Usart_SendString(huart1, (unsigned char *)Com_all, 13);
-      } break;
-      case 0x2903:
-      {
-        DGUS_Clear();
-        char Com_all[20]={0x5A,0xA5,0x0D,0x82,0x29,0x03,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
-        Usart_SendString(huart1, (unsigned char *)Com_all, 16);
-      } break;
-      case 0x2904:
-      {
-        DGUS_Clear();
-        char Com_all[20]={0x5A,0xA5,0x0D,0x82,0x29,0x03,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00};
-        Usart_SendString(huart1, (unsigned char *)Com_all, 16);
-      } break;
-      case 0x2905:
-      {
-        DGUS_Clear();
-        char Com_all[20]={0x5A,0xA5,0x0D,0x82,0x29,0x03,0x00,0x00,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x00};
-        Usart_SendString(huart1, (unsigned char *)Com_all, 16);
-      } break;
-      case 0x2906:
-      {
-        DGUS_Clear();
-        char Com_all[20]={0x5A,0xA5,0x0D,0x82,0x29,0x03,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x00,0x00};
-        Usart_SendString(huart1, (unsigned char *)Com_all, 16);
-      } break;
-      case 0x2907:
-      {
-        DGUS_Clear();
-        char Com_all[20]={0x5A,0xA5,0x0D,0x82,0x29,0x03,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01};
-        Usart_SendString(huart1, (unsigned char *)Com_all, 16);
-      } break;
-      case 0x2908:
-      {
-        DGUS_Clear();
-        char Com_all[20]={0x5A,0xA5,0x07,0x82,0x29,0x08,0x00,0x01,0x00};
-        Usart_SendString(huart1, (unsigned char *)Com_all, 10);
-      } break;
-      default:
-        break;
+        return 0U;
     }
-  }
-
-  if (rx1_frame_ready != 0U)
-  {
-    DGUS_Clear();
-  }
+    length = (uint8_t)(3U + 2U * count);
+    frame[0] = DGUS_FRAME_HEAD_0;
+    frame[1] = DGUS_FRAME_HEAD_1;
+    frame[2] = length;
+    frame[3] = DGUS_CMD_WRITE_VP;
+    frame[4] = (uint8_t)(address >> 8U);
+    frame[5] = (uint8_t)address;
+    for (index = 0U; index < count; index++)
+    {
+        frame[6U + 2U * index] = (uint8_t)(words[index] >> 8U);
+        frame[7U + 2U * index] = (uint8_t)words[index];
+    }
+    /*
+     * A DGUS packet is one UART byte stream.  Transmit the whole packet with
+     * the real USART1 handle, rather than issuing one HAL call per byte via a
+     * copied UART handle.  The local frame remains valid until this blocking
+     * transfer has completed.
+     */
+    return (HAL_UART_Transmit(&huart1, frame, (uint16_t)(length + 3U), 20U) == HAL_OK) ? 1U : 0U;
 }
 
+uint8_t DGUS_WriteSingleData(uint16_t address, uint16_t value)
+{
+    return DGUS_WriteWords(address, &value, 1U);
+}
 
+uint8_t DGUS_WriteAscii(uint16_t address, const uint8_t *ascii, uint8_t byte_count)
+{
+    uint16_t words[DGUS_MAX_WRITE_WORDS];
+    uint8_t word_count;
+    uint8_t index;
 
+    if ((ascii == NULL) || (byte_count == 0U) ||
+        ((byte_count & 1U) != 0U) ||
+        (byte_count > (uint8_t)(DGUS_MAX_WRITE_WORDS * 2U)))
+    {
+        return 0U;
+    }
+    word_count = (uint8_t)(byte_count / 2U);
+    for (index = 0U; index < word_count; index++)
+    {
+        words[index] = (uint16_t)((uint16_t)ascii[index * 2U] << 8U) |
+                       (uint16_t)ascii[index * 2U + 1U];
+    }
+    return DGUS_WriteWords(address, words, word_count);
+}
 
+uint8_t DGUS_ReadWords(uint16_t address, uint8_t count)
+{
+    uint8_t frame[7];
 
+    if ((count == 0U) || (count > 5U))
+    {
+        return 0U;
+    }
+    frame[0] = DGUS_FRAME_HEAD_0;
+    frame[1] = DGUS_FRAME_HEAD_1;
+    frame[2] = 0x04U;
+    frame[3] = DGUS_CMD_READ_VP_RESPONSE;
+    frame[4] = (uint8_t)(address >> 8U);
+    frame[5] = (uint8_t)address;
+    frame[6] = count;
+    return (HAL_UART_Transmit(&huart1, frame, (uint16_t)sizeof(frame), 20U) == HAL_OK) ? 1U : 0U;
+}
 
+void DGUS_ProcessRx(void)
+{
+    uint16_t frame_length;
+    uint16_t payload_length;
 
+    if (rx1_overflow != 0U)
+    {
+        DGUS_ClearRx();
+        return;
+    }
+    if (rx1_pointer < 3U)
+    {
+        return;
+    }
+    payload_length = Rx1Buffer[2];
+    frame_length = (uint16_t)(payload_length + 3U);
+    if ((frame_length > UART_RX_BUFFER_SIZE) || (payload_length < 6U))
+    {
+        DGUS_ClearRx();
+        return;
+    }
+    if (rx1_pointer < frame_length)
+    {
+        return;
+    }
+    if ((Rx1Buffer[0] == DGUS_FRAME_HEAD_0) &&
+        (Rx1Buffer[1] == DGUS_FRAME_HEAD_1) &&
+        (Rx1Buffer[3] == DGUS_CMD_READ_VP_RESPONSE) &&
+        (Rx1Buffer[6] >= 1U) && (Rx1Buffer[6] <= 5U) &&
+        (payload_length == (uint16_t)(4U + 2U * Rx1Buffer[6])))
+    {
+        uint8_t index;
+        uint8_t words = Rx1Buffer[6];
+        g_write_count = words;
+        g_write_index = 0U;
+        for (index = 0U; index < words; index++)
+        {
+            g_writes[index].address = (uint16_t)((uint16_t)(((uint16_t)Rx1Buffer[4] << 8U) |
+                                                             Rx1Buffer[5]) + (uint16_t)index);
+            g_writes[index].value = (uint16_t)(((uint16_t)Rx1Buffer[7U + 2U * index] << 8U) |
+                                                Rx1Buffer[8U + 2U * index]);
+        }
+    }
+    DGUS_ClearRx();
+}
+
+uint8_t DGUS_TakeReceivedWrite(DGUSReceivedWrite *write)
+{
+    uint32_t primask;
+
+    if (write == NULL)
+    {
+        return 0U;
+    }
+    primask = __get_PRIMASK();
+    __disable_irq();
+    if (g_write_index >= g_write_count)
+    {
+        if (primask == 0U)
+        {
+            __enable_irq();
+        }
+        return 0U;
+    }
+    *write = g_writes[g_write_index];
+    g_write_index++;
+    if (primask == 0U)
+    {
+        __enable_irq();
+    }
+    return 1U;
+}

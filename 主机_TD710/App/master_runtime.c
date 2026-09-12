@@ -5,6 +5,7 @@
 #include "auto_control.h"
 #include "command_service.h"
 #include "master_config.h"
+#include "master_calendar.h"
 #include "master_identity.h"
 #include "master_ingress.h"
 #include "master_messages.h"
@@ -14,6 +15,11 @@
 #include "parameter_store.h"
 
 MasterRuntimeDiagnostics MasterRuntimeDiag;
+
+#define MASTER_DGUS_VP_TARGET_TEMPERATURE (0x5013U)
+#define MASTER_DGUS_VP_TARGET_HUMIDITY    (0x5014U)
+#define MASTER_DGUS_VP_PLAN_START         (0x6070U)
+#define MASTER_DGUS_VP_PLAN_END           (0x6090U)
 
 static MasterTemperatureService g_temperature_service;
 static CommandService g_command_service;
@@ -33,6 +39,18 @@ static uint32_t g_flash_save_tick;
 static uint16_t g_flash_origin_flow_id;
 static uint8_t g_flash_save_pending;
 static uint8_t g_flash_failure_reported;
+static uint16_t g_average_humidity_x10;
+static uint8_t g_humidity_valid;
+static uint32_t g_humidity_tick;
+static uint8_t g_temperature_cache_has_humidity;
+static uint16_t g_temperature_cache_humidity_x10;
+static MasterDateTime g_clock;
+static uint8_t g_clock_valid;
+static uint32_t g_clock_tick;
+static MasterParameters g_dgus_candidate;
+static uint8_t g_dgus_time_edit_pending;
+static uint32_t g_dgus_edit_tick;
+static uint32_t g_target_temperature_screen_generation;
 
 typedef struct
 {
@@ -44,6 +62,10 @@ typedef struct
 } MasterPendingCommandContext;
 
 static MasterPendingCommandContext g_pending_command;
+
+static void MasterRuntime_ScheduleParameterSave(const MasterParameters *parameters,
+                                                uint16_t flow_id,
+                                                uint32_t now_ms);
 
 static void MasterRuntime_SetAddress(LoRaMessage *message,
                                      uint8_t type,
@@ -69,12 +91,233 @@ static uint16_t MasterRuntime_ReadU16(const uint8_t *payload)
 
 static void MasterRuntime_UpdateUi(void)
 {
+    MasterDateTime plan_time;
+
     g_ui_snapshot.target_temperature_x10 =
         g_parameters.target_temperature_x10;
     g_ui_snapshot.frequency_x100 = g_parameters.frequency_x100;
     g_ui_snapshot.control_mode = g_parameters.control_mode;
     g_ui_snapshot.fan_state = g_fan_state;
+    g_ui_snapshot.average_humidity_x10 = g_average_humidity_x10;
+    g_ui_snapshot.humidity_valid = g_humidity_valid;
+    g_ui_snapshot.target_humidity_x10 = g_parameters.target_humidity_x10;
+    g_ui_snapshot.target_humidity_configured = g_parameters.target_humidity_configured;
+    g_ui_snapshot.schedule_enabled = g_parameters.schedule_enabled;
+    g_ui_snapshot.target_temperature_screen_generation =
+        g_target_temperature_screen_generation;
+    plan_time.year = g_parameters.plan_start.year;
+    plan_time.month = g_parameters.plan_start.month;
+    plan_time.day = g_parameters.plan_start.day;
+    plan_time.hour = g_parameters.plan_start.hour;
+    plan_time.minute = g_parameters.plan_start.minute;
+    MasterCalendar_ToWords(&plan_time, g_ui_snapshot.plan_start_words);
+    plan_time.year = g_parameters.plan_end.year;
+    plan_time.month = g_parameters.plan_end.month;
+    plan_time.day = g_parameters.plan_end.day;
+    plan_time.hour = g_parameters.plan_end.hour;
+    plan_time.minute = g_parameters.plan_end.minute;
+    MasterCalendar_ToWords(&plan_time, g_ui_snapshot.plan_end_words);
     (void)MasterQueues_OverwriteUi(&g_ui_snapshot);
+}
+
+static uint8_t MasterRuntime_ScheduleActive(uint32_t now_ms)
+{
+    MasterDateTime start_time;
+    MasterDateTime end_time;
+
+    if (g_clock_valid == 0U)
+    {
+        return 0U;
+    }
+    while ((uint32_t)(now_ms - g_clock_tick) >= 60000UL)
+    {
+        MasterCalendar_AddMinutes(&g_clock, 1U);
+        g_clock_tick += 60000UL;
+    }
+    if (g_parameters.schedule_enabled == 0U)
+    {
+        return 0U;
+    }
+    start_time.year = g_parameters.plan_start.year;
+    start_time.month = g_parameters.plan_start.month;
+    start_time.day = g_parameters.plan_start.day;
+    start_time.hour = g_parameters.plan_start.hour;
+    start_time.minute = g_parameters.plan_start.minute;
+    end_time.year = g_parameters.plan_end.year;
+    end_time.month = g_parameters.plan_end.month;
+    end_time.day = g_parameters.plan_end.day;
+    end_time.hour = g_parameters.plan_end.hour;
+    end_time.minute = g_parameters.plan_end.minute;
+    return ((MasterCalendar_Compare(&g_clock, &start_time) >= 0) &&
+            (MasterCalendar_Compare(&g_clock, &end_time) < 0)) ? 1U : 0U;
+}
+
+static uint8_t MasterRuntime_ScheduleEnded(uint32_t now_ms)
+{
+    MasterDateTime end_time;
+
+    (void)MasterRuntime_ScheduleActive(now_ms);
+    if ((g_clock_valid == 0U) || (g_parameters.schedule_enabled == 0U))
+    {
+        return 0U;
+    }
+    end_time.year = g_parameters.plan_end.year;
+    end_time.month = g_parameters.plan_end.month;
+    end_time.day = g_parameters.plan_end.day;
+    end_time.hour = g_parameters.plan_end.hour;
+    end_time.minute = g_parameters.plan_end.minute;
+    return (MasterCalendar_Compare(&g_clock, &end_time) >= 0) ? 1U : 0U;
+}
+
+static uint16_t MasterRuntime_AverageTemperature(const int16_t *temperatures)
+{
+    int32_t sum = 0;
+    uint16_t count = 0U;
+    uint8_t index;
+
+    for (index = 0U; index < LORA_PROTOCOL_TEMP_COUNT; index++)
+    {
+        if (temperatures[index] != 0)
+        {
+            sum += temperatures[index];
+            count++;
+        }
+    }
+    return (count == 0U) ? 0U : (uint16_t)(sum / (int32_t)count);
+}
+
+static uint8_t MasterRuntime_HasValidTemperature(const int16_t *temperatures)
+{
+    uint8_t index;
+
+    for (index = 0U; index < LORA_PROTOCOL_TEMP_COUNT; index++)
+    {
+        if (temperatures[index] != 0)
+        {
+            return 1U;
+        }
+    }
+    return 0U;
+}
+
+static uint8_t MasterRuntime_ParametersValid(const MasterParameters *parameters)
+{
+    MasterDateTime start_time;
+    MasterDateTime end_time;
+
+    if ((parameters == NULL) ||
+        (parameters->target_temperature_x10 < MASTER_MIN_TARGET_TEMP_X10) ||
+        (parameters->target_temperature_x10 > MASTER_MAX_TARGET_TEMP_X10) ||
+        (parameters->target_humidity_x10 > 1000U) ||
+        (parameters->target_humidity_configured > 1U) ||
+        (parameters->schedule_enabled > 1U))
+    {
+        return 0U;
+    }
+    if (parameters->schedule_enabled == 0U)
+    {
+        return 1U;
+    }
+    start_time.year = parameters->plan_start.year;
+    start_time.month = parameters->plan_start.month;
+    start_time.day = parameters->plan_start.day;
+    start_time.hour = parameters->plan_start.hour;
+    start_time.minute = parameters->plan_start.minute;
+    end_time.year = parameters->plan_end.year;
+    end_time.month = parameters->plan_end.month;
+    end_time.day = parameters->plan_end.day;
+    end_time.hour = parameters->plan_end.hour;
+    end_time.minute = parameters->plan_end.minute;
+    return ((MasterCalendar_IsValid(&start_time) != 0U) &&
+            (MasterCalendar_IsValid(&end_time) != 0U) &&
+            (MasterCalendar_Compare(&start_time, &end_time) < 0)) ? 1U : 0U;
+}
+
+static void MasterRuntime_HandleDgusWrite(uint16_t address, uint16_t value,
+                                          uint32_t now_ms)
+{
+    MasterPlanTime *time;
+    uint8_t index;
+
+    if (address == MASTER_DGUS_VP_TARGET_TEMPERATURE)
+    {
+        g_dgus_candidate = g_parameters;
+        g_dgus_candidate.target_temperature_x10 = (int16_t)value;
+        if (MasterRuntime_ParametersValid(&g_dgus_candidate) != 0U)
+        {
+            g_parameters = g_dgus_candidate;
+            MasterRuntime_ScheduleParameterSave(&g_parameters, 0U, now_ms);
+        }
+        MasterRuntime_UpdateUi();
+        return;
+    }
+    if (address == MASTER_DGUS_VP_TARGET_HUMIDITY)
+    {
+        if (value <= 1000U)
+        {
+            g_dgus_candidate = g_parameters;
+            g_dgus_candidate.target_humidity_x10 = value;
+            g_dgus_candidate.target_humidity_configured = 1U;
+            g_parameters = g_dgus_candidate;
+            MasterRuntime_ScheduleParameterSave(&g_parameters, 0U, now_ms);
+        }
+        MasterRuntime_UpdateUi();
+        return;
+    }
+    if (((address >= MASTER_DGUS_VP_PLAN_START) && (address < MASTER_DGUS_VP_PLAN_START + 5U)) ||
+        ((address >= MASTER_DGUS_VP_PLAN_END) && (address < MASTER_DGUS_VP_PLAN_END + 5U)))
+    {
+        if (g_dgus_time_edit_pending == 0U)
+        {
+            g_dgus_candidate = g_parameters;
+        }
+        time = (address >= MASTER_DGUS_VP_PLAN_END) ? &g_dgus_candidate.plan_end :
+                                                &g_dgus_candidate.plan_start;
+        index = (uint8_t)(address - ((address >= MASTER_DGUS_VP_PLAN_END) ?
+                                     MASTER_DGUS_VP_PLAN_END : MASTER_DGUS_VP_PLAN_START));
+        if (index == 0U) time->year = value;
+        else if (index == 1U) time->month = (uint8_t)value;
+        else if (index == 2U) time->day = (uint8_t)value;
+        else if (index == 3U) time->hour = (uint8_t)value;
+        else time->minute = (uint8_t)value;
+        g_dgus_time_edit_pending = 1U;
+        g_dgus_edit_tick = now_ms;
+    }
+}
+
+static void MasterRuntime_ProcessDgusEdit(uint32_t now_ms)
+{
+    if ((g_dgus_time_edit_pending == 0U) ||
+        ((uint32_t)(now_ms - g_dgus_edit_tick) < 500U))
+    {
+        return;
+    }
+    g_dgus_time_edit_pending = 0U;
+    g_dgus_candidate.schedule_enabled = 1U;
+    if (MasterRuntime_ParametersValid(&g_dgus_candidate) != 0U)
+    {
+        g_parameters = g_dgus_candidate;
+        MasterRuntime_ScheduleParameterSave(&g_parameters, 0U, now_ms);
+    }
+    MasterRuntime_UpdateUi();
+}
+
+static void MasterRuntime_HandleTimeSync(const LoRaMessage *message,
+                                         uint32_t now_ms)
+{
+    MasterDateTime time;
+
+    time.year = MasterRuntime_ReadU16(message->payload);
+    time.month = message->payload[2];
+    time.day = message->payload[3];
+    time.hour = message->payload[4];
+    time.minute = message->payload[5];
+    if (MasterCalendar_IsValid(&time) != 0U)
+    {
+        g_clock = time;
+        g_clock_tick = now_ms;
+        g_clock_valid = 1U;
+    }
 }
 
 static uint8_t MasterRuntime_QueueAck(uint16_t flow_id,
@@ -205,6 +448,35 @@ static uint8_t MasterRuntime_QueueTemperature(uint16_t flow_id,
         message.payload[i * 2U] = (uint8_t)(raw & 0x00FFU);
         message.payload[(i * 2U) + 1U] = (uint8_t)((raw >> 8U) & 0x00FFU);
     }
+
+    if (MasterQueues_SendLoRa(&message, 0U) != pdPASS)
+    {
+        MasterRuntimeDiag.lora_queue_failure_count++;
+        return 0U;
+    }
+    return 1U;
+}
+
+static uint8_t MasterRuntime_QueueSensor(uint16_t flow_id,
+                                         const int16_t *temperatures,
+                                         uint16_t humidity_x10)
+{
+    LoRaMessage message;
+    uint32_t i;
+
+    MasterRuntime_SetAddress(&message, LORA_MSG_SENSOR_36,
+                             LORA_ROLE_CONTROL_ROOM, 0U, flow_id);
+    message.payload_length = LORA_PROTOCOL_SENSOR_PAYLOAD_SIZE;
+    for (i = 0U; i < LORA_PROTOCOL_TEMP_COUNT; i++)
+    {
+        uint16_t raw = (uint16_t)temperatures[i];
+        message.payload[i * 2U] = (uint8_t)(raw & 0x00FFU);
+        message.payload[(i * 2U) + 1U] = (uint8_t)((raw >> 8U) & 0x00FFU);
+    }
+    message.payload[LORA_PROTOCOL_TEMP_PAYLOAD_SIZE] =
+        (uint8_t)(humidity_x10 & 0x00FFU);
+    message.payload[LORA_PROTOCOL_TEMP_PAYLOAD_SIZE + 1U] =
+        (uint8_t)((humidity_x10 >> 8U) & 0x00FFU);
 
     if (MasterQueues_SendLoRa(&message, 0U) != pdPASS)
     {
@@ -366,6 +638,7 @@ static void MasterRuntime_StartNewCommand(const LoRaMessage *message)
         if (MasterRuntime_SaveParameters(&g_pending_command.candidate) != 0U)
         {
             g_parameters = g_pending_command.candidate;
+            g_target_temperature_screen_generation++;
             g_flash_save_pending = 0U;
             g_flash_failure_reported = 0U;
             MasterRuntimeDiag.parameters_dirty = 0U;
@@ -636,13 +909,28 @@ static void MasterRuntime_ProcessAutomaticControl(uint32_t now_ms)
     uint8_t fresh;
 
     fresh = MasterTemperature_IsCacheFresh(&g_temperature_service, now_ms);
-    decision = AutoControl_Step(&g_auto_control,
+    if ((g_humidity_valid == 0U) ||
+        ((uint32_t)(now_ms - g_humidity_tick) > MASTER_TEMP_CACHE_FRESH_MS) ||
+        (g_parameters.target_humidity_configured == 0U))
+    {
+        fresh = 0U;
+    }
+    decision = AutoControl_StepWithHumidity(&g_auto_control,
                                 g_parameters.control_mode,
                                 g_temperature_service.cache,
                                 LORA_PROTOCOL_TEMP_COUNT,
                                 fresh,
                                 g_parameters.target_temperature_x10,
+                                g_average_humidity_x10,
+                                g_humidity_valid,
+                                g_parameters.target_humidity_x10,
+                                MasterRuntime_ScheduleActive(now_ms),
                                 now_ms);
+    if ((g_parameters.control_mode == MASTER_CONTROL_MODE_AUTO) &&
+        (MasterRuntime_ScheduleEnded(now_ms) != 0U))
+    {
+        decision = AUTO_DECISION_STOP;
+    }
     if ((g_command_service.pending.valid != 0U) ||
         (g_auto_vfd_pending != 0U) ||
         (g_safety_stop_required != 0U) ||
@@ -722,8 +1010,9 @@ static void MasterRuntime_HandleSlave(const LoRaMessage *message,
                                       uint32_t now_ms)
 {
     int16_t temperatures[LORA_PROTOCOL_TEMP_COUNT];
+    uint16_t humidity;
 
-    if (message->type != LORA_MSG_TEMP_36)
+    if ((message->type != LORA_MSG_TEMP_36) && (message->type != LORA_MSG_SENSOR_36))
     {
         return;
     }
@@ -741,8 +1030,27 @@ static void MasterRuntime_HandleSlave(const LoRaMessage *message,
     MasterRuntimeDiag.temperature_accept_count++;
     memcpy(g_ui_snapshot.temperatures, temperatures,
            sizeof(g_ui_snapshot.temperatures));
-    g_ui_snapshot.temperature_valid = 1U;
-    (void)MasterQueues_OverwriteUi(&g_ui_snapshot);
+    g_ui_snapshot.temperature_valid = MasterRuntime_HasValidTemperature(temperatures);
+    g_ui_snapshot.average_temperature_x10 = MasterRuntime_AverageTemperature(temperatures);
+    if (message->type == LORA_MSG_SENSOR_36)
+    {
+        humidity = MasterRuntime_ReadU16(&message->payload[LORA_PROTOCOL_TEMP_PAYLOAD_SIZE]);
+        g_humidity_valid = (humidity != LORA_PROTOCOL_HUMIDITY_INVALID) ? 1U : 0U;
+        if (g_humidity_valid != 0U)
+        {
+            g_average_humidity_x10 = humidity;
+            g_humidity_tick = now_ms;
+        }
+        g_temperature_cache_has_humidity = 1U;
+        g_temperature_cache_humidity_x10 = humidity;
+    }
+    else
+    {
+        /* 旧 TEMP_36 没有湿度，不能作为自动控制快照。 */
+        g_humidity_valid = 0U;
+        g_temperature_cache_has_humidity = 0U;
+    }
+    MasterRuntime_UpdateUi();
 }
 
 static void MasterRuntime_ProcessPending(uint32_t now_ms)
@@ -762,7 +1070,11 @@ static void MasterRuntime_ProcessPending(uint32_t now_ms)
                                           &flow_id,
                                           temperatures) != 0U)
     {
-        if (MasterRuntime_QueueTemperature(flow_id, temperatures) != 0U)
+        if (((g_temperature_cache_has_humidity != 0U) &&
+             (MasterRuntime_QueueSensor(flow_id, temperatures,
+                                        g_temperature_cache_humidity_x10) != 0U)) ||
+            ((g_temperature_cache_has_humidity == 0U) &&
+             (MasterRuntime_QueueTemperature(flow_id, temperatures) != 0U)))
         {
             MasterTemperature_CompletePending(&g_temperature_service);
         }
@@ -784,6 +1096,7 @@ void MasterRuntime_Init(void)
 {
     ParameterStoreStatus parameter_status;
     uint8_t loaded_mode;
+    uint8_t humidity_defaulted = 0U;
 
     memset(&MasterRuntimeDiag, 0, sizeof(MasterRuntimeDiag));
     memset(&g_ui_snapshot, 0, sizeof(g_ui_snapshot));
@@ -803,7 +1116,27 @@ void MasterRuntime_Init(void)
     g_flash_save_pending = 0U;
     g_flash_failure_reported = 0U;
     g_fan_state = MASTER_FAN_STATE_UNKNOWN;
+    g_average_humidity_x10 = 0U;
+    g_humidity_valid = 0U;
+    g_humidity_tick = 0U;
+    g_temperature_cache_has_humidity = 0U;
+    g_temperature_cache_humidity_x10 = LORA_PROTOCOL_HUMIDITY_INVALID;
+    memset(&g_clock, 0, sizeof(g_clock));
+    g_clock_valid = 0U;
+    g_clock_tick = 0U;
     parameter_status = ParameterStore_Load(&g_parameters);
+    /* Old records had no humidity field.  Keep automatic humidity control
+       disabled, but give the display and a future operator edit a sane value. */
+    if ((g_parameters.target_humidity_configured == 0U) &&
+        (g_parameters.target_humidity_x10 == 0U))
+    {
+        g_parameters.target_humidity_x10 = MASTER_DEFAULT_TARGET_HUMIDITY_X10;
+        humidity_defaulted = 1U;
+    }
+    g_dgus_candidate = g_parameters;
+    g_dgus_time_edit_pending = 0U;
+    g_dgus_edit_tick = 0U;
+    g_target_temperature_screen_generation = 0U;
     loaded_mode = g_parameters.control_mode;
     if (parameter_status == PARAMETER_STORE_DEFAULTS)
     {
@@ -814,7 +1147,8 @@ void MasterRuntime_Init(void)
     g_parameters.control_mode = MASTER_CONTROL_MODE_MANUAL_STOP;
     g_safety_stop_required = 1U;
     if ((parameter_status == PARAMETER_STORE_DEFAULTS) ||
-        (loaded_mode != MASTER_CONTROL_MODE_MANUAL_STOP))
+        (loaded_mode != MASTER_CONTROL_MODE_MANUAL_STOP) ||
+        (humidity_defaulted != 0U))
     {
         MasterRuntime_ScheduleParameterSave(&g_parameters, 0U, 0U);
     }
@@ -844,6 +1178,11 @@ void MasterRuntime_ProcessOne(uint32_t now_ms, TickType_t wait_ticks)
                     MasterRuntime_HandleRead(&g_runtime_event.data.lora_message,
                                              now_ms);
                 }
+                else if (g_runtime_event.data.lora_message.type == LORA_MSG_TIME_SYNC)
+                {
+                    MasterRuntime_HandleTimeSync(&g_runtime_event.data.lora_message,
+                                                 now_ms);
+                }
                 else if (CommandService_IsControlType(
                              g_runtime_event.data.lora_message.type) != 0U)
                 {
@@ -867,11 +1206,18 @@ void MasterRuntime_ProcessOne(uint32_t now_ms, TickType_t wait_ticks)
             MasterRuntime_HandleVfdResult(&g_runtime_event.data.vfd_result,
                                           now_ms);
         }
+        else if (g_runtime_event.type == MASTER_EVENT_DGUS_WRITE)
+        {
+            MasterRuntime_HandleDgusWrite(g_runtime_event.data.dgus_write.address,
+                                          g_runtime_event.data.dgus_write.value,
+                                          now_ms);
+        }
     }
 
     MasterRuntime_ProcessPending(now_ms);
     MasterRuntime_ProcessSafetyStop(now_ms);
     MasterRuntime_ProcessParameterSave(now_ms);
+    MasterRuntime_ProcessDgusEdit(now_ms);
     MasterRuntime_ProcessAutomaticControl(now_ms);
 }
 

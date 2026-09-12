@@ -34,6 +34,10 @@ static LoRaProtocolStatus LoRaProtocol_ValidatePayloadLength(uint8_t type,
             return (payload_length == LORA_PROTOCOL_TEMP_PAYLOAD_SIZE) ?
                    LORA_PROTOCOL_OK : LORA_PROTOCOL_INVALID_PAYLOAD_LENGTH;
 
+        case (uint8_t)LORA_MSG_SENSOR_36:
+            return (payload_length == LORA_PROTOCOL_SENSOR_PAYLOAD_SIZE) ?
+                   LORA_PROTOCOL_OK : LORA_PROTOCOL_INVALID_PAYLOAD_LENGTH;
+
         case (uint8_t)LORA_MSG_SET_FREQ:
         case (uint8_t)LORA_MSG_SET_TARGET_TEMP:
         case (uint8_t)LORA_MSG_ACK:
@@ -45,6 +49,10 @@ static LoRaProtocolStatus LoRaProtocol_ValidatePayloadLength(uint8_t type,
         case (uint8_t)LORA_MSG_SET_AUTO:
         case (uint8_t)LORA_MSG_QUERY_STATUS:
             return (payload_length == 0U) ?
+                   LORA_PROTOCOL_OK : LORA_PROTOCOL_INVALID_PAYLOAD_LENGTH;
+
+        case (uint8_t)LORA_MSG_TIME_SYNC:
+            return (payload_length == 6U) ?
                    LORA_PROTOCOL_OK : LORA_PROTOCOL_INVALID_PAYLOAD_LENGTH;
 
         case (uint8_t)LORA_MSG_RESULT:
@@ -78,6 +86,7 @@ static LoRaProtocolStatus LoRaProtocol_ValidateDirection(const LoRaMessage *mess
             break;
 
         case (uint8_t)LORA_MSG_TEMP_36:
+        case (uint8_t)LORA_MSG_SENSOR_36:
             if (((source_role == (uint8_t)LORA_ROLE_SLAVE) &&
                  (destination_role == (uint8_t)LORA_ROLE_MASTER)) ||
                 ((source_role == (uint8_t)LORA_ROLE_MASTER) &&
@@ -93,6 +102,7 @@ static LoRaProtocolStatus LoRaProtocol_ValidateDirection(const LoRaMessage *mess
         case (uint8_t)LORA_MSG_MANUAL_STOP:
         case (uint8_t)LORA_MSG_SET_AUTO:
         case (uint8_t)LORA_MSG_QUERY_STATUS:
+        case (uint8_t)LORA_MSG_TIME_SYNC:
             if ((source_role == (uint8_t)LORA_ROLE_CONTROL_ROOM) &&
                 (destination_role == (uint8_t)LORA_ROLE_MASTER))
             {

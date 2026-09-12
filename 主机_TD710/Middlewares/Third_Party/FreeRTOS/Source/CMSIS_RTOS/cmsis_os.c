@@ -1,4 +1,4 @@
-﻿/* ----------------------------------------------------------------------
+/* ----------------------------------------------------------------------
  * $Date:        5. February 2013
  * $Revision:    V1.02
  *
@@ -215,7 +215,7 @@ osThreadId osThreadCreate (const osThreadDef_t *thread_def, void *argument)
               &handle) != pdPASS)  {
       return NULL;
     } 
-  }
+  }                    
 #elif( configSUPPORT_STATIC_ALLOCATION == 1 )
 
     handle = xTaskCreateStatic((TaskFunction_t)thread_def->pthread,(const portCHAR *)thread_def->name,

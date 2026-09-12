@@ -3,14 +3,28 @@
 
 #include <stdint.h>
 
-#define PARAMETER_RECORD_SIZE            (32U)
-#define PARAMETER_RECORD_COMMIT_OFFSET   (28U)
+#define PARAMETER_RECORD_SIZE            (48U)
+#define PARAMETER_RECORD_COMMIT_OFFSET   (44U)
+
+typedef struct
+{
+    uint16_t year;
+    uint8_t month;
+    uint8_t day;
+    uint8_t hour;
+    uint8_t minute;
+} MasterPlanTime;
 
 typedef struct
 {
     uint16_t frequency_x100;
     int16_t target_temperature_x10;
     uint8_t control_mode;
+    uint16_t target_humidity_x10;
+    MasterPlanTime plan_start;
+    MasterPlanTime plan_end;
+    uint8_t target_humidity_configured;
+    uint8_t schedule_enabled;
 } MasterParameters;
 
 typedef enum

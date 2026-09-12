@@ -238,21 +238,158 @@ void StartDGUSTask(void const * argument)
 {
   /* USER CODE BEGIN StartDGUSTask */
   static MasterUiSnapshot ui_snapshot;
-  uint32_t last_update_tick = HAL_GetTick() - 5000U;
+  static MasterEvent dgus_event;
+  uint32_t last_update_tick = HAL_GetTick() - 1000U;
+  uint32_t last_screen_refresh_tick = HAL_GetTick() - 2000U;
+  uint32_t boot_tick = HAL_GetTick();
+  static uint8_t temperature_sent;
+  static uint8_t humidity_sent;
+  static uint8_t fan_state_sent;
+  static uint16_t last_temperature_x10;
+  static uint16_t last_humidity_x10;
+  static uint16_t last_fan_state;
+  static uint32_t last_uptime_minute = 0xFFFFFFFFUL;
+  static uint8_t initial_setpoint_read_requested;
+  static uint32_t applied_remote_temperature_generation;
   /* Infinite loop */
   for(;;)
   {
     /* DGUS 串口只由本任务处理，避免与 LoRa 任务交叉访问。 */
-    DGUS_TouchAck();
-    if ((uint32_t)(HAL_GetTick() - last_update_tick) >= 5000U)
+    DGUSReceivedWrite dgus_write;
+    DGUS_ProcessRx();
+    while (DGUS_TakeReceivedWrite(&dgus_write) != 0U)
+    {
+      memset(&dgus_event, 0, sizeof(dgus_event));
+      dgus_event.type = MASTER_EVENT_DGUS_WRITE;
+      dgus_event.data.dgus_write.address = dgus_write.address;
+      dgus_event.data.dgus_write.value = dgus_write.value;
+      (void)MasterQueues_SendEvent(&dgus_event, pdMS_TO_TICKS(20U));
+    }
+    if ((uint32_t)(HAL_GetTick() - last_update_tick) >= 1000U)
     {
       last_update_tick = HAL_GetTick();
       if (MasterQueues_PeekUi(&ui_snapshot) == pdPASS)
       {
-        /* 旧串口屏只有一个粮温字段，暂时显示36点中的第1点。
-           0表示无效；环境温湿度和风压按当前需求不采集、不刷新。 */
-        DGUS_WriteSingleData(DGUS_GrainTemp,
-                             (int)ui_snapshot.temperatures[0]);
+        uint8_t uptime_ascii[16];
+        uint32_t elapsed_minutes = (uint32_t)(HAL_GetTick() - boot_tick) / 60000U;
+        uint32_t minutes = elapsed_minutes;
+        uint32_t years;
+        uint8_t months;
+        uint8_t days;
+        uint8_t hours;
+        uint8_t minute_of_hour;
+
+        /*
+         * DGUS does not acknowledge ordinary VP writes.  The display may
+         * still be booting when the master sends its first state, so repeat
+         * the operational display values every two seconds.  This is also a
+         * visible, probeable heartbeat on PA9.  Operator-editable setpoints
+         * and plan VPs are deliberately excluded below.
+         */
+        if ((uint32_t)(HAL_GetTick() - last_screen_refresh_tick) >= 2000U)
+        {
+          last_screen_refresh_tick = HAL_GetTick();
+          temperature_sent = 0U;
+          humidity_sent = 0U;
+          fan_state_sent = 0U;
+          last_uptime_minute = 0xFFFFFFFFUL;
+        }
+
+        minute_of_hour = (uint8_t)(minutes % 60U); minutes /= 60U;
+        hours = (uint8_t)(minutes % 24U); minutes /= 24U;
+        days = (uint8_t)(minutes % 30U); minutes /= 30U;
+        months = (uint8_t)(minutes % 12U); minutes /= 12U;
+        years = minutes;
+        uptime_ascii[0] = (uint8_t)('0' + ((years / 1000U) % 10U));
+        uptime_ascii[1] = (uint8_t)('0' + ((years / 100U) % 10U));
+        uptime_ascii[2] = (uint8_t)('0' + ((years / 10U) % 10U));
+        uptime_ascii[3] = (uint8_t)('0' + (years % 10U));
+        uptime_ascii[4] = (uint8_t)'-';
+        uptime_ascii[5] = (uint8_t)('0' + (months / 10U));
+        uptime_ascii[6] = (uint8_t)('0' + (months % 10U));
+        uptime_ascii[7] = (uint8_t)'-';
+        uptime_ascii[8] = (uint8_t)('0' + (days / 10U));
+        uptime_ascii[9] = (uint8_t)('0' + (days % 10U));
+        uptime_ascii[10] = (uint8_t)'-';
+        uptime_ascii[11] = (uint8_t)('0' + (hours / 10U));
+        uptime_ascii[12] = (uint8_t)('0' + (hours % 10U));
+        uptime_ascii[13] = (uint8_t)':';
+        uptime_ascii[14] = (uint8_t)('0' + (minute_of_hour / 10U));
+        uptime_ascii[15] = (uint8_t)('0' + (minute_of_hour % 10U));
+        if ((ui_snapshot.temperature_valid != 0U) &&
+            ((temperature_sent == 0U) ||
+             (last_temperature_x10 != ui_snapshot.average_temperature_x10)))
+        {
+          if (DGUS_WriteSingleData(DGUS_VP_AVERAGE_TEMPERATURE,
+                                   ui_snapshot.average_temperature_x10) != 0U)
+          {
+            last_temperature_x10 = ui_snapshot.average_temperature_x10;
+            temperature_sent = 1U;
+          }
+        }
+        if ((ui_snapshot.humidity_valid != 0U) &&
+            ((humidity_sent == 0U) ||
+             (last_humidity_x10 != ui_snapshot.average_humidity_x10)))
+        {
+          if (DGUS_WriteSingleData(DGUS_VP_AVERAGE_HUMIDITY,
+                                   ui_snapshot.average_humidity_x10) != 0U)
+          {
+            last_humidity_x10 = ui_snapshot.average_humidity_x10;
+            humidity_sent = 1U;
+          }
+        }
+        /*
+         * The screen owns operator-entered setpoints.  Only an accepted
+         * control-room SET_TARGET_TEMP command is allowed to write 0x5013
+         * back to the screen; normal refreshes never touch either setpoint.
+         */
+        if (applied_remote_temperature_generation !=
+            ui_snapshot.target_temperature_screen_generation)
+        {
+          if (DGUS_WriteSingleData(DGUS_VP_TARGET_TEMPERATURE,
+                                   (uint16_t)ui_snapshot.target_temperature_x10) != 0U)
+          {
+            applied_remote_temperature_generation =
+                ui_snapshot.target_temperature_screen_generation;
+          }
+        }
+        if ((initial_setpoint_read_requested == 0U) &&
+            (ui_snapshot.target_temperature_screen_generation == 0U) &&
+            ((uint32_t)(HAL_GetTick() - boot_tick) >= 2000U))
+        {
+          /* Read the screen's initial 0x5013/0x5014 values once it is ready.
+             The two VPs are consecutive, so one 0x83 request reads both. */
+          if (DGUS_ReadWords(DGUS_VP_TARGET_TEMPERATURE, 2U) != 0U)
+          {
+            initial_setpoint_read_requested = 1U;
+          }
+        }
+        if (last_uptime_minute != elapsed_minutes)
+        {
+          if (DGUS_WriteAscii(DGUS_VP_UPTIME, uptime_ascii,
+                              (uint8_t)sizeof(uptime_ascii)) != 0U)
+          {
+            last_uptime_minute = elapsed_minutes;
+          }
+        }
+        /*
+         * 0x6070--0x6074 and 0x6090--0x6094 belong to the screen's
+         * editable ASCII time controls.  Do not write those VPs from the
+         * master: a binary Word write corrupts their text buffer and also
+         * overwrites an operator's in-progress edit.
+         */
+        if ((fan_state_sent == 0U) || (last_fan_state !=
+            ((ui_snapshot.fan_state == MASTER_FAN_STATE_RUNNING) ? 1U : 0U)))
+        {
+          uint16_t fan_state = (ui_snapshot.fan_state == MASTER_FAN_STATE_RUNNING) ? 1U : 0U;
+
+          if ((DGUS_WriteSingleData(DGUS_VP_FAN_ANIMATION, fan_state) != 0U) &&
+              (DGUS_WriteSingleData(DGUS_VP_INDICATOR_ANIMATION, fan_state) != 0U))
+          {
+            last_fan_state = fan_state;
+            fan_state_sent = 1U;
+          }
+        }
       }
     }
     osDelay(20);

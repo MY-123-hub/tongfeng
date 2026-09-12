@@ -13,10 +13,12 @@
 #define MASTER_MAX_FREQUENCY_X100                (5000U)
 
 #define MASTER_DEFAULT_TARGET_TEMP_X10           (260)
+#define MASTER_DEFAULT_TARGET_HUMIDITY_X10       (300U)
 #define MASTER_MIN_TARGET_TEMP_X10               (-550)
 #define MASTER_MAX_TARGET_TEMP_X10               (1250)
 
 #define MASTER_AUTO_STOP_HYSTERESIS_X10          (5)
+#define MASTER_AUTO_HUMIDITY_STOP_HYSTERESIS_X10 (5U)
 #define MASTER_AUTO_STOP_HOLD_MS                  (60000UL)
 
 /* 安全停机和脏参数都限速重试，避免忙等待和Flash过度擦写。 */

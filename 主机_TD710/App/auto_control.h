@@ -27,5 +27,16 @@ AutoDecision AutoControl_Step(AutoControlState *state,
                               uint8_t snapshot_fresh,
                               int16_t target_x10,
                               uint32_t now_ms);
+AutoDecision AutoControl_StepWithHumidity(AutoControlState *state,
+                              uint8_t control_mode,
+                              const int16_t *temperatures_x10,
+                              uint8_t point_count,
+                              uint8_t snapshot_fresh,
+                              int16_t target_x10,
+                              uint16_t average_humidity_x10,
+                              uint8_t humidity_valid,
+                              uint16_t target_humidity_x10,
+                              uint8_t schedule_active,
+                              uint32_t now_ms);
 
 #endif /* AUTO_CONTROL_H */

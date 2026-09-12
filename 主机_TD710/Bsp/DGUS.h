@@ -1,44 +1,41 @@
-﻿#ifndef __DGUS_H__
-#define __DGUS_H__
+﻿#ifndef DGUS_H
+#define DGUS_H
 
-#include "main.h"
-#include "stdio.h"
-#include "string.h"
+#include <stdint.h>
+
 #include "usart.h"
 
+#define DGUS_FRAME_HEAD_0                     (0x5AU)
+#define DGUS_FRAME_HEAD_1                     (0xA5U)
+#define DGUS_CMD_WRITE_VP                      (0x82U)
+#define DGUS_CMD_READ_VP_RESPONSE              (0x83U)
+#define DGUS_MAX_WRITE_WORDS                    (8U)
 
-
-
-/**
-  * @brief  基础功能码定义
-  */
-#define REV_WAIT    1   // 接受未完成标志
-#define REV_OK      0   // 接受完成标志
-
-
-
-/**
-  * @brief  DGUS 串口屏地址枚举
-  */
 typedef enum
 {
-    DGUS_GrainHumi             	= 0x3100,    	/*!< 粮面湿度   */
-    DGUS_GrainTemp              = 0x3102,   	/*!< 粮面温度   */
-    DGUS_GrainSpeed             = 0x3104,    	/*!< 粮面风速   */
-    DGUS_EnvirHumi              = 0x3106,    	/*!< 环境湿度   */
-    DGUS_EnvirTemp              = 0x3108,    	/*!< 环境温度   */
-}DGUSWriteAddrTypeNum;
+    DGUS_VP_AVERAGE_TEMPERATURE = 0x5002U,
+    DGUS_VP_AVERAGE_HUMIDITY = 0x5003U,
+    DGUS_VP_TARGET_TEMPERATURE = 0x5013U,
+    DGUS_VP_TARGET_HUMIDITY = 0x5014U,
+    DGUS_VP_FAN_ANIMATION = 0x5073U,
+    DGUS_VP_INDICATOR_ANIMATION = 0x5075U,
+    DGUS_VP_UPTIME = 0x6050U,
+    DGUS_VP_PLAN_START = 0x6070U,
+    DGUS_VP_PLAN_END = 0x6090U
+} DGUSVpAddress;
 
+typedef struct
+{
+    uint16_t address;
+    uint16_t value;
+} DGUSReceivedWrite;
 
+uint8_t DGUS_WriteSingleData(uint16_t address, uint16_t value);
+uint8_t DGUS_WriteWords(uint16_t address, const uint16_t *words, uint8_t count);
+uint8_t DGUS_WriteAscii(uint16_t address, const uint8_t *ascii, uint8_t byte_count);
+uint8_t DGUS_ReadWords(uint16_t address, uint8_t count);
+uint8_t DGUS_IsScreenFlashControlAddress(uint16_t address);
+void DGUS_ProcessRx(void);
+uint8_t DGUS_TakeReceivedWrite(DGUSReceivedWrite *write);
 
-/* 函数声明 */
-void DGUS_WriteSingleData(int S_Addr,int Data);
-void DGUS_TouchAck(void);
-
-
-
-/* 变量声明 */
-
-
-
-#endif /*__DGUS_H__*/
+#endif /* DGUS_H */

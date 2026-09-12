@@ -21,5 +21,8 @@ void SlaveRuntime_PushRxByteFromIsr(uint8_t byte);
 void SlaveRuntime_Process(uint32_t now_ms);
 uint8_t SlaveRuntime_TakeSampleRequest(uint16_t *flow_id);
 void SlaveRuntime_CompleteSample(uint16_t flow_id, const int16_t temperatures[36]);
+void SlaveRuntime_CompleteSensorSample(uint16_t flow_id,
+                                       const int16_t temperatures[36],
+                                       uint16_t average_humidity_x10);
 
 #endif /* SLAVE_PROTOCOL_RUNTIME_H */
