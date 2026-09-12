@@ -135,7 +135,7 @@ static uint32_t MasterRuntime_ReadU32(const uint8_t *payload)
            ((uint32_t)payload[3] << 24U);
 }
 
-static uint16_t MasterRuntime_AverageTemperature(const int16_t *temperatures)
+static int16_t MasterRuntime_AverageTemperature(const int16_t *temperatures)
 {
     int32_t sum = 0;
     uint16_t count = 0U;
@@ -149,7 +149,7 @@ static uint16_t MasterRuntime_AverageTemperature(const int16_t *temperatures)
             count++;
         }
     }
-    return (count == 0U) ? 0U : (uint16_t)(sum / (int32_t)count);
+    return (count == 0U) ? 0 : (int16_t)(sum / (int32_t)count);
 }
 
 static uint8_t MasterRuntime_HasValidTemperature(const int16_t *temperatures)

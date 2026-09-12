@@ -97,7 +97,7 @@ typedef struct
 {
     int16_t temperatures[LORA_PROTOCOL_TEMP_COUNT];
     int16_t target_temperature_x10;
-    uint16_t average_temperature_x10;
+    int16_t average_temperature_x10;
     uint16_t average_humidity_x10;
     uint16_t target_humidity_x10;
     int16_t environment_temperature_x10;

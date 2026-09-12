@@ -261,7 +261,7 @@ void StartDGUSTask(void const * argument)
   static uint8_t slave_pressure_sent;
   static uint8_t master_pressure_sent;
   static uint8_t fan_state_sent;
-  static uint16_t last_temperature_x10;
+  static int16_t last_temperature_x10;
   static uint16_t last_humidity_x10;
   static int16_t last_master_temperature_x10;
   static uint16_t last_master_humidity_x10;
@@ -296,13 +296,24 @@ void StartDGUSTask(void const * argument)
       {
         if (ui_snapshot.temperature_valid != 0U)
         {
-          (void)DGUS_WriteSingleData(DGUS_VP_TEMPERATURE_CURVE,
-                                     ui_snapshot.average_temperature_x10);
+          int32_t curve_temperature =
+              (int32_t)ui_snapshot.average_temperature_x10 + 500L;
+
+          /* Curve scale: -50.0..50.0 C maps to 0..1000. */
+          if ((curve_temperature >= 0L) && (curve_temperature <= 1000L))
+          {
+            (void)DGUS_WriteSingleData(DGUS_VP_TEMPERATURE_CURVE,
+                                       (uint16_t)curve_temperature);
+          }
         }
         if (ui_snapshot.humidity_valid != 0U)
         {
+          uint16_t curve_humidity =
+              (uint16_t)(ui_snapshot.average_humidity_x10 * 10U);
+
+          /* Curve scale: 0.0..100.0 %RH maps to 0..10000. */
           (void)DGUS_WriteSingleData(DGUS_VP_HUMIDITY_CURVE,
-                                     ui_snapshot.average_humidity_x10);
+                                     curve_humidity);
         }
       }
     }
