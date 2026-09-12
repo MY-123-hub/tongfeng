@@ -19,6 +19,7 @@
 4个从机切换按钮选择当前显示哪个从机的温度数据。白色主题, SQLite 实时存储。
 """
 
+
 import os, csv, json, sqlite3
 from datetime import datetime, timedelta
 
@@ -111,6 +112,16 @@ class LoRaProtocol:
     INVALID_HUMIDITY = 0xFFFF
     INVALID_PRESSURE = 0xFFFFFFFF
     RAIN_UNAVAILABLE = 0xFFFF
+    RESULT_DATA_LEN = 7
+
+    RESULT_NAMES = {
+        0x00: '成功', 0x01: '参数无效', 0x02: '状态不允许',
+        0x03: '设备忙', 0x04: '从机超时', 0x05: '变频器超时',
+        0x06: '变频器响应异常', 0x07: '参数保存失败',
+        0x08: '流水号冲突', 0x09: '不支持的命令',
+    }
+    CONTROL_MODE_NAMES = {0: '自动', 1: '手动运行', 2: '手动停止'}
+    FAN_STATE_NAMES = {0: '已停止', 1: '运行中', 2: '状态未知'}
 
     @classmethod
     def _valid_payload(cls, msg_type, payload):
@@ -291,6 +302,30 @@ class LoRaProtocol:
             'slave_bme_pressure_pa': pressure(cls._read_u32(data, 76)),
             'master_bme_pressure_pa': pressure(cls._read_u32(data, 80)),
             'rain': None if rain_raw == cls.RAIN_UNAVAILABLE else rain_raw,
+        }
+
+    @classmethod
+    def decode_result_data(cls, data):
+        """解析主机 RESULT 的7字节状态回执。"""
+        if len(data) != cls.RESULT_DATA_LEN:
+            raise ValueError(f'RESULT 数据区应为 {cls.RESULT_DATA_LEN} 字节')
+
+        target_raw = cls._read_u16(data, 5)
+        target_x10 = target_raw - 0x10000 if target_raw >= 0x8000 else target_raw
+        result_code = data[0]
+        control_mode = data[1]
+        fan_state = data[2]
+        return {
+            'result_code': result_code,
+            'result_name': cls.RESULT_NAMES.get(result_code, f'未知错误(0x{result_code:02X})'),
+            'control_mode': control_mode,
+            'control_mode_name': cls.CONTROL_MODE_NAMES.get(
+                control_mode, f'未知模式(0x{control_mode:02X})'),
+            'fan_state': fan_state,
+            'fan_state_name': cls.FAN_STATE_NAMES.get(
+                fan_state, f'未知风机状态(0x{fan_state:02X})'),
+            'frequency_hz': cls._read_u16(data, 3) / 100.0,
+            'target_temperature_c': target_x10 / 10.0,
         }
 
     @classmethod
@@ -1002,6 +1037,11 @@ class App(tk.Tk):
 
         self.freq_vars = []
         self.temp_vars = []
+        self.host_status_vars = {}
+        tk.Label(host_frame,
+                 text='自动温控：先设目标温度，再点击“自动”启用；设温度不会改变当前手动/自动模式。',
+                 bg=Theme.BG_CARD, fg=Theme.TEXT_DIM, font=('', 10)
+                 ).pack(anchor='w', padx=13, pady=(5, 0))
         for h in range(NUM_HOSTS):
             g = h + 1  # 主机组号 1~4
             sub = tk.Frame(host_frame, bg=Theme.BG_CARD)
@@ -1043,6 +1083,11 @@ class App(tk.Tk):
                        command=lambda g=g: self._send_read_temp(g, force=False)).pack(side=tk.LEFT, padx=2)
             ttk.Button(sub, text='请求环境', style='SmallFlat.TButton',
                        command=lambda g=g: self._send_read_env(g, force=False)).pack(side=tk.LEFT, padx=2)
+            status_var = tk.StringVar(value='状态：未查询')
+            self.host_status_vars[g] = status_var
+            tk.Label(sub, textvariable=status_var, bg=Theme.BG_CARD,
+                     fg=Theme.TEXT_DIM, font=('', 9), anchor='w'
+                     ).pack(side=tk.LEFT, padx=(10, 2))
 
         # 全局: 请求所有主机温度 (允许缓存)
         bulk = tk.Frame(host_frame, bg=Theme.BG_CARD)
@@ -1563,10 +1608,25 @@ class App(tk.Tk):
             f'ACK 流水号={parsed["flow_id"]} 状态={st_str} 原因={reason} | {data.hex(" ").upper()}')
 
     def _handle_result(self, parsed):
-        # 数据区: 结果、模式、风机、频率、目标温度 (具体定义见设备侧)
-        data = parsed['data']
+        try:
+            result = LoRaProtocol.decode_result_data(parsed['data'])
+        except ValueError as exc:
+            self._show_response(f'RESULT 流水号={parsed["flow_id"]} 格式错误：{exc}')
+            return
+
+        host_group = parsed['sender_group']
+        status_text = (
+            f'状态：{result["result_name"]} | 模式：{result["control_mode_name"]} | '
+            f'风机：{result["fan_state_name"]} | {result["frequency_hz"]:.2f}Hz | '
+            f'{result["target_temperature_c"]:.1f}℃')
+        status_var = self.host_status_vars.get(host_group)
+        if status_var is not None:
+            status_var.set(status_text)
+        if 1 <= host_group <= len(self.freq_vars):
+            self.freq_vars[host_group - 1].set(f'{result["frequency_hz"]:.2f}')
+            self.temp_vars[host_group - 1].set(f'{result["target_temperature_c"]:.1f}')
         self._show_response(
-            f'RESULT 流水号={parsed["flow_id"]} | {data.hex(" ").upper()}')
+            f'RESULT 主机{host_group} 流水号={parsed["flow_id"]} | {status_text}')
 
     def _handle_error(self, parsed):
         # 数据区: 错误码、补充信息
@@ -1698,10 +1758,10 @@ class App(tk.Tk):
     def _send_target_temp(self, host_group, temp_str):
         try:
             temp = float(temp_str)
-            if not (0 <= temp <= 200.0):
+            if not (-55.0 <= temp <= 125.0):
                 raise ValueError
         except ValueError:
-            messagebox.showwarning('提示', f'主机{host_group} 目标温度范围: 0~200 ℃')
+            messagebox.showwarning('提示', f'主机{host_group} 目标温度范围: -55.0~125.0 ℃')
             return
         flow_id = self.serial_mgr.next_flow_id()
         packet = LoRaProtocol.cmd_set_target_temp(host_group, flow_id, temp)

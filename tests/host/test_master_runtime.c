@@ -351,10 +351,22 @@ static void TestAutomaticControlIntegration(void)
     LoRaMessage output;
     VfdJob job;
     MasterUiSnapshot snapshot;
-    uint16_t flow_id;
-    uint32_t now_ms;
 
     ResetRuntime(1U);
+
+    /* 设置目标温度只更新参数，不得把手动停机改为自动。 */
+    input = MakeControl(LORA_MSG_SET_TARGET_TEMP, 898U);
+    input.payload_length = 2U;
+    input.payload[0] = 0x0EU; /* 27.0℃ */
+    input.payload[1] = 0x01U;
+    PushMessage(&input);
+    MasterRuntime_ProcessOne(0U, 0U);
+    CHECK(MasterQueues_ReceiveLoRa(&output, 0U) == pdPASS);
+    CHECK(output.type == LORA_MSG_ACK);
+    CHECK(MasterQueues_ReceiveLoRa(&output, 0U) == pdPASS);
+    CHECK(output.type == LORA_MSG_RESULT);
+    CHECK(output.payload[1] == MASTER_CONTROL_MODE_MANUAL_STOP);
+    CHECK(output.payload[5] == 0x0EU && output.payload[6] == 0x01U);
 
     input = MakeControl(LORA_MSG_SET_AUTO, 899U);
     PushMessage(&input);
@@ -373,7 +385,7 @@ static void TestAutomaticControlIntegration(void)
 
     input = MakeTemperature(1U, 900U);
     SetAllTemperatures(&input, 0);
-    input.payload[70] = 0x05U; /* 第36点=26.1℃，验证前35点为0仍会启动。 */
+    input.payload[70] = 0x0FU; /* 第36点=27.1℃，验证前35点为0仍会启动。 */
     input.payload[71] = 0x01U;
     PushMessage(&input);
     MasterRuntime_ProcessOne(200U, 0U);
@@ -382,35 +394,26 @@ static void TestAutomaticControlIntegration(void)
     CHECK(MasterQueues_ReceiveVfdJob(&job, 0U) == pdPASS);
     CHECK(job.origin == VFD_JOB_ORIGIN_AUTOMATIC);
     CHECK(job.action == VFD_ACTION_RUN_FORWARD);
+    CHECK(job.frequency_x100 == MASTER_DEFAULT_FREQUENCY_X100);
 
     PushVfdResult(&job, VFD_RESULT_OK);
     MasterRuntime_ProcessOne(201U, 0U);
     CHECK(MasterQueues_PeekUi(&snapshot) == pdPASS);
     CHECK(snapshot.fan_state == MASTER_FAN_STATE_RUNNING);
 
-    /* 每4秒给一套完整低温快照，使缓存持续新鲜；满60秒后才停机。 */
-    for (now_ms = 1000U, flow_id = 901U;
-         now_ms <= 61000U;
-         now_ms += 4000U, flow_id++)
-    {
-        input = MakeRead(1U, flow_id, 1U);
-        PushMessage(&input);
-        MasterRuntime_ProcessOne(now_ms, 0U);
-        CHECK(MasterQueues_ReceiveLoRa(&output, 0U) == pdPASS);
-        CHECK(output.type == LORA_MSG_READ_TEMP);
+    /* 全部有效点降至目标-0.5℃后，下一帧立即按TD710减速方式停机。 */
+    input = MakeRead(1U, 901U, 1U);
+    PushMessage(&input);
+    MasterRuntime_ProcessOne(1000U, 0U);
+    CHECK(MasterQueues_ReceiveLoRa(&output, 0U) == pdPASS);
+    CHECK(output.type == LORA_MSG_READ_TEMP);
 
-        input = MakeTemperature(1U, flow_id);
-        SetAllTemperatures(&input, 255);
-        PushMessage(&input);
-        MasterRuntime_ProcessOne(now_ms + 1U, 0U);
-        CHECK(MasterQueues_ReceiveLoRa(&output, 0U) == pdPASS);
-        CHECK(output.type == LORA_MSG_TEMP_36);
-
-        if (now_ms < 61000U)
-        {
-            CHECK(MasterQueues_ReceiveVfdJob(&job, 0U) == pdFAIL);
-        }
-    }
+    input = MakeTemperature(1U, 901U);
+    SetAllTemperatures(&input, 265);
+    PushMessage(&input);
+    MasterRuntime_ProcessOne(1001U, 0U);
+    CHECK(MasterQueues_ReceiveLoRa(&output, 0U) == pdPASS);
+    CHECK(output.type == LORA_MSG_TEMP_36);
 
     CHECK(MasterQueues_ReceiveVfdJob(&job, 0U) == pdPASS);
     CHECK(job.origin == VFD_JOB_ORIGIN_AUTOMATIC);

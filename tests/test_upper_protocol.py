@@ -35,6 +35,17 @@ class UpperProtocolTests(unittest.TestCase):
         self.assertEqual(
             LoRaProtocol.cmd_set_target_temp(1, 100, -5.5)[11:13], bytes((0xC9, 0xFF)))
 
+    def test_result_data_decodes_control_status(self):
+        decoded = LoRaProtocol.decode_result_data(
+            bytes((0x00, 0x00, 0x01, 0xB8, 0x0B, 0xFB, 0x00)))
+        self.assertEqual(decoded['result_name'], '成功')
+        self.assertEqual(decoded['control_mode_name'], '自动')
+        self.assertEqual(decoded['fan_state_name'], '运行中')
+        self.assertEqual(decoded['frequency_hz'], 30.00)
+        self.assertEqual(decoded['target_temperature_c'], 25.1)
+        with self.assertRaises(ValueError):
+            LoRaProtocol.decode_result_data(b'\x00' * 6)
+
     def test_temperature_frame_is_89_bytes_and_uses_v2_invalid_value(self):
         raw_values = [0, -55, 250] + [-32768] * 33 + [205, -32768]
         payload = b''.join(value.to_bytes(2, 'little', signed=True)

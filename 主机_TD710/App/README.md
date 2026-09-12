@@ -53,7 +53,7 @@ PB14/PB15 -> BME280Task -> q_environment -> MasterRuntime -> q_ui_snapshot
   `main.c` 固定为组1，拨码上电冻结功能留到全链路稳定后恢复。
 - `master_temperature`：36点缓存、单在途流水号、3s从机超时和待发回复。
 - `command_service`：1个pending + 4条completed历史，按“流水号+类型+长度+数据”去重。
-- `auto_control`：任意有效点高于目标立即启动；36点全部有效且不高于“目标-0.5℃”连续60s才停机。
+- `auto_control`：仅以36点温度控制；任意有效点高于目标立即启动，全部有效点不高于“目标-0.5℃”即减速停机；无效点忽略，过期快照不下发新命令。
 - `vfd_modbus_codec`：TD710 功能码 `10`、寄存器 `2000`的纯C编解码。
 - `parameter_record`：32B、CRC32、generation反码和双提交标志。
 - `BME280`：PB14=SCL、PB15=SDA的软件I²C驱动，自动探测0x76/0x77并采集环境温度、湿度和气压（Pa）。
@@ -67,7 +67,7 @@ PB14/PB15 -> BME280Task -> q_environment -> MasterRuntime -> q_ui_snapshot
 - 从机响应超时：3s；
 - 默认频率：30.00Hz；范围0~50.00Hz；
 - 默认目标：26.0℃；范围-55.0~125.0℃；
-- 自动停机回差：0.5℃；低温连续时间：60s；
+- 自动停机回差：0.5℃；
 - 频率Flash合并保存延迟：3s；失败重试间隔：5s。
 
 主机每次上电都强制进入手动停机并向TD710发送停止命令，不恢复掉电前的运行模式。

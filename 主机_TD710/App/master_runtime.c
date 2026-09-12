@@ -23,7 +23,6 @@ MasterRuntimeDiagnostics MasterRuntimeDiag;
 
 static MasterTemperatureService g_temperature_service;
 static CommandService g_command_service;
-static AutoControlState g_auto_control;
 static MasterParameters g_parameters;
 static MasterUiSnapshot g_ui_snapshot;
 static MasterEvent g_runtime_event;
@@ -202,55 +201,6 @@ static void MasterRuntime_UpdateUi(void)
     g_ui_snapshot.target_temperature_screen_generation =
         g_target_temperature_screen_generation;
     (void)MasterQueues_OverwriteUi(&g_ui_snapshot);
-}
-
-static uint8_t MasterRuntime_ScheduleActive(uint32_t now_ms)
-{
-    MasterDateTime start_time;
-    MasterDateTime end_time;
-
-    if (g_clock_valid == 0U)
-    {
-        return 0U;
-    }
-    while ((uint32_t)(now_ms - g_clock_tick) >= 60000UL)
-    {
-        MasterCalendar_AddMinutes(&g_clock, 1U);
-        g_clock_tick += 60000UL;
-    }
-    if (g_parameters.schedule_enabled == 0U)
-    {
-        return 0U;
-    }
-    start_time.year = g_parameters.plan_start.year;
-    start_time.month = g_parameters.plan_start.month;
-    start_time.day = g_parameters.plan_start.day;
-    start_time.hour = g_parameters.plan_start.hour;
-    start_time.minute = g_parameters.plan_start.minute;
-    end_time.year = g_parameters.plan_end.year;
-    end_time.month = g_parameters.plan_end.month;
-    end_time.day = g_parameters.plan_end.day;
-    end_time.hour = g_parameters.plan_end.hour;
-    end_time.minute = g_parameters.plan_end.minute;
-    return ((MasterCalendar_Compare(&g_clock, &start_time) >= 0) &&
-            (MasterCalendar_Compare(&g_clock, &end_time) < 0)) ? 1U : 0U;
-}
-
-static uint8_t MasterRuntime_ScheduleEnded(uint32_t now_ms)
-{
-    MasterDateTime end_time;
-
-    (void)MasterRuntime_ScheduleActive(now_ms);
-    if ((g_clock_valid == 0U) || (g_parameters.schedule_enabled == 0U))
-    {
-        return 0U;
-    }
-    end_time.year = g_parameters.plan_end.year;
-    end_time.month = g_parameters.plan_end.month;
-    end_time.day = g_parameters.plan_end.day;
-    end_time.hour = g_parameters.plan_end.hour;
-    end_time.minute = g_parameters.plan_end.minute;
-    return (MasterCalendar_Compare(&g_clock, &end_time) >= 0) ? 1U : 0U;
 }
 
 static uint8_t MasterRuntime_QueueAck(uint16_t flow_id,
@@ -722,7 +672,6 @@ static void MasterRuntime_StartNewCommand(const LoRaMessage *message)
             g_flash_failure_reported = 0U;
             MasterRuntimeDiag.parameters_dirty = 0U;
             g_control_epoch++;
-            AutoControl_Init(&g_auto_control);
             MasterRuntime_CompleteCommand(MASTER_ERROR_NONE);
         }
         else
@@ -739,7 +688,6 @@ static void MasterRuntime_StartNewCommand(const LoRaMessage *message)
         g_control_epoch++;
         g_safety_stop_required = 0U;
         g_safety_stop_pending = 0U;
-        AutoControl_Init(&g_auto_control);
         MasterRuntime_CompleteCommand(MASTER_ERROR_NONE);
         return;
     }
@@ -988,28 +936,11 @@ static void MasterRuntime_ProcessAutomaticControl(uint32_t now_ms)
     uint8_t fresh;
 
     fresh = MasterTemperature_IsCacheFresh(&g_temperature_service, now_ms);
-    if ((g_humidity_valid == 0U) ||
-        ((uint32_t)(now_ms - g_humidity_tick) > MASTER_ENV_CACHE_FRESH_MS) ||
-        (g_parameters.target_humidity_configured == 0U))
-    {
-        fresh = 0U;
-    }
-    decision = AutoControl_StepWithHumidity(&g_auto_control,
-                                g_parameters.control_mode,
+    decision = AutoControl_Step(g_parameters.control_mode,
                                 g_temperature_service.cache,
                                 LORA_PROTOCOL_TEMP_COUNT,
                                 fresh,
-                                g_parameters.target_temperature_x10,
-                                g_average_humidity_x10,
-                                g_humidity_valid,
-                                g_parameters.target_humidity_x10,
-                                MasterRuntime_ScheduleActive(now_ms),
-                                now_ms);
-    if ((g_parameters.control_mode == MASTER_CONTROL_MODE_AUTO) &&
-        (MasterRuntime_ScheduleEnded(now_ms) != 0U))
-    {
-        decision = AUTO_DECISION_STOP;
-    }
+                                g_parameters.target_temperature_x10);
     if ((g_command_service.pending.valid != 0U) ||
         (g_auto_vfd_pending != 0U) ||
         (g_safety_stop_required != 0U) ||
@@ -1266,7 +1197,6 @@ void MasterRuntime_Init(void)
     g_slave_bme_temperature_x10 = LORA_PROTOCOL_TEMPERATURE_INVALID;
     MasterTemperature_Init(&g_temperature_service);
     CommandService_Init(&g_command_service);
-    AutoControl_Init(&g_auto_control);
     g_control_epoch = 1U;
     g_auto_pending_epoch = 0U;
     g_auto_vfd_pending = 0U;

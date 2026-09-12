@@ -20,8 +20,6 @@
 #define MASTER_MAX_TARGET_TEMP_X10               (1250)
 
 #define MASTER_AUTO_STOP_HYSTERESIS_X10          (5)
-#define MASTER_AUTO_HUMIDITY_STOP_HYSTERESIS_X10 (5U)
-#define MASTER_AUTO_STOP_HOLD_MS                  (60000UL)
 
 /* 安全停机和脏参数都限速重试，避免忙等待和Flash过度擦写。 */
 #define MASTER_SAFETY_STOP_RETRY_MS                (1000UL)
