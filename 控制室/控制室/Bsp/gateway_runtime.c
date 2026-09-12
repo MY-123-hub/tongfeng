@@ -1,24 +1,38 @@
 #include "gateway_runtime.h"
+#include "lora_protocol.h"
 
 #include <string.h>
 
 /* 必须与 protocol/LORA_TELEMETRY.md 和主机 lora_protocol.c 保持一致。 */
-#define GATEWAY_HEAD_1                  (0xAAU)
-#define GATEWAY_HEAD_2                  (0x55U)
-#define GATEWAY_VERSION                 (0x01U)
+#define GATEWAY_HEAD_1                  LORA_PROTOCOL_HEAD_0
+#define GATEWAY_HEAD_2                  LORA_PROTOCOL_HEAD_1
+#define GATEWAY_VERSION                 LORA_PROTOCOL_VERSION
 #define GATEWAY_MIN_FRAME_SIZE          (13U)
 #define GATEWAY_MAX_FRAME_SIZE          (109U)
+<<<<<<< HEAD
 #define GATEWAY_MAX_PAYLOAD_SIZE        (96U)
 #define GATEWAY_TEMP_PAYLOAD_SIZE       (72U)
 #define GATEWAY_SENSOR_PAYLOAD_SIZE     (74U)
+=======
+#define GATEWAY_MAX_PAYLOAD_SIZE        LORA_PROTOCOL_MAX_PAYLOAD
+#define GATEWAY_TEMP_PAYLOAD_SIZE       LORA_PROTOCOL_TEMPERATURE_BYTES
+#define GATEWAY_ENV_PAYLOAD_SIZE        LORA_PROTOCOL_ENVIRONMENT_BYTES
+>>>>>>> 28f8ebd64ef82f20c630196b7c8fd675eb3e94d0
 
 #define GATEWAY_ROLE_CONTROL_ROOM       (0x01U)
 #define GATEWAY_ROLE_MASTER             (0x02U)
-#define GATEWAY_ACTIVE_GROUP            (0x01U)
+#define GATEWAY_ROLE_PC                 (0x04U)
+#define GATEWAY_FIRST_GROUP             (0x01U)
+#define GATEWAY_LAST_GROUP              (0x04U)
 
 #define GATEWAY_TYPE_READ_TEMP          (0x01U)
 #define GATEWAY_TYPE_TEMP_36            (0x02U)
+<<<<<<< HEAD
 #define GATEWAY_TYPE_SENSOR_36          (0x03U)
+=======
+#define GATEWAY_TYPE_READ_ENV           (0x03U)
+#define GATEWAY_TYPE_ENV_DATA           (0x04U)
+>>>>>>> 28f8ebd64ef82f20c630196b7c8fd675eb3e94d0
 #define GATEWAY_TYPE_SET_FREQ           (0x10U)
 #define GATEWAY_TYPE_SET_TARGET_TEMP    (0x11U)
 #define GATEWAY_TYPE_MANUAL_RUN         (0x12U)
@@ -27,6 +41,7 @@
 #define GATEWAY_TYPE_QUERY_STATUS       (0x15U)
 #define GATEWAY_TYPE_ACK                (0x20U)
 #define GATEWAY_TYPE_RESULT             (0x21U)
+#define GATEWAY_TYPE_HOST_LIST          (0x30U)
 #define GATEWAY_TYPE_ERROR              (0x7EU)
 #define GATEWAY_ACK_REJECTED            (0x02U)
 #define GATEWAY_ERROR_STATE_NOT_ALLOWED (0x02U)
@@ -95,6 +110,11 @@ static uint8_t g_pc_queue_count;
 static GatewayPending g_pending;
 static uint16_t g_next_auto_flow;
 static uint32_t g_next_poll_tick;
+static uint8_t g_next_poll_group;
+static uint8_t g_next_poll_type;
+static uint8_t g_active_groups[4];
+static uint8_t g_active_group_count;
+static uint8_t g_active_group_index;
 static GatewaySendCallback g_send_callback;
 static void *g_send_context;
 
@@ -124,8 +144,8 @@ static uint16_t Gateway_Crc16(const uint8_t *data, uint16_t length)
 
 static uint8_t Gateway_IsValidGroup(uint8_t group)
 {
-    /* 当前单套固件联调只开放M1；拨码和多组轮询最后再恢复。 */
-    return (group == GATEWAY_ACTIVE_GROUP) ? 1U : 0U;
+    return ((group >= GATEWAY_FIRST_GROUP) &&
+            (group <= GATEWAY_LAST_GROUP)) ? 1U : 0U;
 }
 
 static uint8_t Gateway_IsValidPayload(const GatewayMessage *message)
@@ -138,11 +158,17 @@ static uint8_t Gateway_IsValidPayload(const GatewayMessage *message)
     switch (message->type)
     {
         case GATEWAY_TYPE_READ_TEMP:
+        case GATEWAY_TYPE_READ_ENV:
             return ((message->payload_length == 1U) && (message->payload[0] <= 1U)) ? 1U : 0U;
         case GATEWAY_TYPE_TEMP_36:
             return (message->payload_length == GATEWAY_TEMP_PAYLOAD_SIZE) ? 1U : 0U;
+<<<<<<< HEAD
         case GATEWAY_TYPE_SENSOR_36:
             return (message->payload_length == GATEWAY_SENSOR_PAYLOAD_SIZE) ? 1U : 0U;
+=======
+        case GATEWAY_TYPE_ENV_DATA:
+            return (message->payload_length == GATEWAY_ENV_PAYLOAD_SIZE) ? 1U : 0U;
+>>>>>>> 28f8ebd64ef82f20c630196b7c8fd675eb3e94d0
         case GATEWAY_TYPE_SET_FREQ:
         case GATEWAY_TYPE_SET_TARGET_TEMP:
         case GATEWAY_TYPE_ACK:
@@ -156,6 +182,9 @@ static uint8_t Gateway_IsValidPayload(const GatewayMessage *message)
             return (message->payload_length == 7U) ? 1U : 0U;
         case GATEWAY_TYPE_ERROR:
             return ((message->payload_length >= 1U) && (message->payload_length <= 16U)) ? 1U : 0U;
+        case GATEWAY_TYPE_HOST_LIST:
+            return ((message->payload_length >= 1U) &&
+                    (message->payload_length <= 4U)) ? 1U : 0U;
         default:
             return 0U;
     }
@@ -301,8 +330,19 @@ static uint8_t Gateway_ParseByte(GatewayParser *parser, uint8_t byte,
 
 static uint8_t Gateway_IsPcCommand(const GatewayMessage *message)
 {
-    if ((message == NULL) || (message->source_role != GATEWAY_ROLE_CONTROL_ROOM) ||
-        (message->source_group != 0U) ||
+    if ((message == NULL) || (message->source_group != 0U))
+    {
+        return 0U;
+    }
+
+    if ((message->type == GATEWAY_TYPE_HOST_LIST) &&
+        (message->source_role == GATEWAY_ROLE_PC) &&
+        (message->destination_role == GATEWAY_ROLE_CONTROL_ROOM) &&
+        (message->destination_group == 0U))
+    {
+        return 1U;
+    }
+    if ((message->source_role != GATEWAY_ROLE_CONTROL_ROOM) ||
         (message->destination_role != GATEWAY_ROLE_MASTER))
     {
         return 0U;
@@ -311,6 +351,7 @@ static uint8_t Gateway_IsPcCommand(const GatewayMessage *message)
     switch (message->type)
     {
         case GATEWAY_TYPE_READ_TEMP:
+        case GATEWAY_TYPE_READ_ENV:
         case GATEWAY_TYPE_SET_FREQ:
         case GATEWAY_TYPE_SET_TARGET_TEMP:
         case GATEWAY_TYPE_MANUAL_RUN:
@@ -321,6 +362,38 @@ static uint8_t Gateway_IsPcCommand(const GatewayMessage *message)
         default:
             return 0U;
     }
+}
+
+static uint8_t Gateway_ApplyHostList(const GatewayMessage *message)
+{
+    uint8_t index;
+    uint8_t prior;
+
+    if ((message == NULL) || (message->type != GATEWAY_TYPE_HOST_LIST))
+    {
+        return 0U;
+    }
+    for (index = 0U; index < message->payload_length; index++)
+    {
+        if (Gateway_IsValidGroup(message->payload[index]) == 0U)
+        {
+            return 0U;
+        }
+        for (prior = 0U; prior < index; prior++)
+        {
+            if (message->payload[prior] == message->payload[index])
+            {
+                return 0U;
+            }
+        }
+    }
+
+    memcpy(g_active_groups, message->payload, message->payload_length);
+    g_active_group_count = message->payload_length;
+    g_active_group_index = 0U;
+    g_next_poll_group = g_active_groups[0];
+    g_next_poll_type = GATEWAY_TYPE_READ_TEMP;
+    return 1U;
 }
 
 static uint8_t Gateway_EncodeAndSend(const GatewayMessage *message,
@@ -394,7 +467,8 @@ static uint8_t Gateway_Start(const GatewayMessage *message, uint8_t automatic_po
     g_pending.group = message->destination_group;
     g_pending.request_type = message->type;
     g_pending.flow_id = message->flow_id;
-    g_pending.deadline = now_ms + ((message->type == GATEWAY_TYPE_READ_TEMP) ?
+    g_pending.deadline = now_ms + (((message->type == GATEWAY_TYPE_READ_TEMP) ||
+                                    (message->type == GATEWAY_TYPE_READ_ENV)) ?
                                    GATEWAY_TEMP_TIMEOUT_MS : GATEWAY_COMMAND_TIMEOUT_MS);
     return 1U;
 }
@@ -435,6 +509,10 @@ static uint8_t Gateway_PendingComplete(const GatewayMessage *message)
     {
         return ((message->type == GATEWAY_TYPE_TEMP_36) ||
                 (message->type == GATEWAY_TYPE_SENSOR_36)) ? 1U : 0U;
+    }
+    if (g_pending.request_type == GATEWAY_TYPE_READ_ENV)
+    {
+        return (message->type == GATEWAY_TYPE_ENV_DATA) ? 1U : 0U;
     }
     return (message->type == GATEWAY_TYPE_RESULT) ? 1U : 0U;
 }
@@ -497,6 +575,12 @@ void GatewayRuntime_Init(GatewaySendCallback send_callback, void *context)
     g_pc_queue_count = 0U;
     g_next_auto_flow = 0x8000U;
     g_next_poll_tick = 0U;
+    /* 当前联调仅轮询 M1；四组列表可由上位机 HOST_LIST 命令恢复。 */
+    g_active_groups[0] = 1U;
+    g_active_group_count = 1U;
+    g_active_group_index = 0U;
+    g_next_poll_group = g_active_groups[g_active_group_index];
+    g_next_poll_type = GATEWAY_TYPE_READ_TEMP;
     g_send_callback = send_callback;
     g_send_context = context;
 }
@@ -524,7 +608,11 @@ void GatewayRuntime_Process(uint32_t now_ms)
         if ((Gateway_ParseByte(&g_pc_parser, byte, &message) != 0U) &&
             (Gateway_IsPcCommand(&message) != 0U))
         {
-            if (Gateway_IsValidGroup(message.destination_group) == 0U)
+            if (message.type == GATEWAY_TYPE_HOST_LIST)
+            {
+                (void)Gateway_ApplyHostList(&message);
+            }
+            else if (Gateway_IsValidGroup(message.destination_group) == 0U)
             {
                 Gateway_SendLocalError(&message,
                                        GATEWAY_ERROR_STATE_NOT_ALLOWED);
@@ -575,11 +663,11 @@ void GatewayRuntime_Process(uint32_t now_ms)
         GatewayMessage poll;
 
         (void)memset(&poll, 0, sizeof(poll));
-        poll.type = GATEWAY_TYPE_READ_TEMP;
+        poll.type = g_next_poll_type;
         poll.source_role = GATEWAY_ROLE_CONTROL_ROOM;
         poll.source_group = 0U;
         poll.destination_role = GATEWAY_ROLE_MASTER;
-        poll.destination_group = GATEWAY_ACTIVE_GROUP;
+        poll.destination_group = g_next_poll_group;
         poll.flow_id = g_next_auto_flow;
         poll.payload_length = 1U;
         poll.payload[0] = 0U;
@@ -588,6 +676,20 @@ void GatewayRuntime_Process(uint32_t now_ms)
         {
             g_next_auto_flow++;
             g_next_poll_tick = now_ms + GATEWAY_POLL_INTERVAL_MS;
+            if (g_next_poll_type == GATEWAY_TYPE_READ_TEMP)
+            {
+                g_next_poll_type = GATEWAY_TYPE_READ_ENV;
+            }
+            else
+            {
+                g_next_poll_type = GATEWAY_TYPE_READ_TEMP;
+                g_active_group_index++;
+                if (g_active_group_index >= g_active_group_count)
+                {
+                    g_active_group_index = 0U;
+                }
+                g_next_poll_group = g_active_groups[g_active_group_index];
+            }
         }
     }
 }

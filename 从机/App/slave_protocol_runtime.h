@@ -3,6 +3,23 @@
 
 #include <stdint.h>
 
+#define SLAVE_TELEMETRY_POINT_COUNT          (36U)
+#define SLAVE_TEMPERATURE_INVALID_X10        (-32767 - 1)
+#define SLAVE_HUMIDITY_INVALID_X10           (0xFFFFU)
+#define SLAVE_PRESSURE_INVALID_PA            (0xFFFFFFFFUL)
+#define SLAVE_RAIN_VALUE_UNAVAILABLE         (0xFFFFU)
+
+typedef struct
+{
+    int16_t node_temperature_x10[SLAVE_TELEMETRY_POINT_COUNT];
+    uint16_t node_humidity_x10[SLAVE_TELEMETRY_POINT_COUNT];
+    int16_t slave_bme_temperature_x10;
+    uint16_t slave_bme_humidity_x10;
+    uint32_t slave_bme_pressure_pa;
+    uint16_t rain_value;
+    uint32_t sample_tick;
+} SlaveTelemetrySnapshot;
+
 typedef struct
 {
     volatile uint32_t rx_overflow_count;
@@ -20,9 +37,15 @@ uint8_t SlaveRuntime_IsApplicationMode(void);
 void SlaveRuntime_PushRxByteFromIsr(uint8_t byte);
 void SlaveRuntime_Process(uint32_t now_ms);
 uint8_t SlaveRuntime_TakeSampleRequest(uint16_t *flow_id);
+<<<<<<< HEAD
 void SlaveRuntime_CompleteSample(uint16_t flow_id, const int16_t temperatures[36]);
 void SlaveRuntime_CompleteSensorSample(uint16_t flow_id,
                                        const int16_t temperatures[36],
                                        uint16_t average_humidity_x10);
+=======
+void SlaveRuntime_UpdateSnapshot(const SlaveTelemetrySnapshot *snapshot);
+void SlaveRuntime_CompleteSample(uint16_t flow_id,
+                                 const SlaveTelemetrySnapshot *snapshot);
+>>>>>>> 28f8ebd64ef82f20c630196b7c8fd675eb3e94d0
 
 #endif /* SLAVE_PROTOCOL_RUNTIME_H */

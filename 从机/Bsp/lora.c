@@ -190,7 +190,7 @@ void LORA_Init(void)
         (void)LORA_SendAtCommand("AT+Z\r\n", "Start");
     }
 
-    /* 当前只联调一套固件，应用层组号固定为1；拨码开关最后再启用。 */
+    /* 当前联调固定为 S1；拨码组号功能待 M1/S1 链路跑通后再恢复。 */
     SlaveRuntime_Init(1U);
     if (LoraSlaveConfigErrorCount != 0U)
     {

@@ -7,7 +7,7 @@
 - `protocol/`: shared protocol definitions. Update this first when either endpoint changes its data frame.
 - `上位机/`: active PC application. Keep its Python source, executable release, and Python-only tests together here; do not mix STM32 firmware files into this directory.
 
-## Development rules
+## Developmen![[评委部署说明]]t rules
 
 - Keep each firmware independently buildable from its own `MDK-ARM/*.uvprojx` project.
 - Do not commit Keil generated output, per-user workspace settings, or CubeMX generated temporary files.

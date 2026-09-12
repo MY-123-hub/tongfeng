@@ -12,6 +12,7 @@
 #define MASTER_LORA_TX_QUEUE_DEPTH     (4U)
 #define MASTER_VFD_JOB_QUEUE_DEPTH     (3U)
 #define MASTER_UI_QUEUE_DEPTH          (1U)
+#define MASTER_ENVIRONMENT_QUEUE_DEPTH (1U)
 
 typedef struct
 {
@@ -20,6 +21,7 @@ typedef struct
     uint32_t vfd_job_full_count;
     uint32_t vfd_job_evicted_count;
     uint32_t ui_write_failure_count;
+    uint32_t environment_write_failure_count;
 } MasterQueueDiagnostics;
 
 extern MasterQueueDiagnostics MasterQueueDiag;
@@ -48,6 +50,10 @@ BaseType_t MasterQueues_ReceiveVfdJob(VfdJob *job, TickType_t wait_ticks);
 
 BaseType_t MasterQueues_OverwriteUi(const MasterUiSnapshot *snapshot);
 BaseType_t MasterQueues_PeekUi(MasterUiSnapshot *snapshot);
+
+BaseType_t MasterQueues_OverwriteEnvironment(
+    const MasterEnvironmentSample *sample);
+BaseType_t MasterQueues_ReceiveEnvironment(MasterEnvironmentSample *sample);
 
 UBaseType_t MasterQueues_EventWaiting(void);
 UBaseType_t MasterQueues_LoRaWaiting(void);

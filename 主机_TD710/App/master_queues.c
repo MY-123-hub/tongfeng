@@ -8,16 +8,20 @@ static StaticQueue_t g_event_queue_control;
 static StaticQueue_t g_lora_tx_queue_control;
 static StaticQueue_t g_vfd_job_queue_control;
 static StaticQueue_t g_ui_queue_control;
+static StaticQueue_t g_environment_queue_control;
 
 static uint8_t g_event_queue_storage[MASTER_EVENT_QUEUE_DEPTH * sizeof(MasterEvent)];
 static uint8_t g_lora_tx_queue_storage[MASTER_LORA_TX_QUEUE_DEPTH * sizeof(LoRaMessage)];
 static uint8_t g_vfd_job_queue_storage[MASTER_VFD_JOB_QUEUE_DEPTH * sizeof(VfdJob)];
 static uint8_t g_ui_queue_storage[MASTER_UI_QUEUE_DEPTH * sizeof(MasterUiSnapshot)];
+static uint8_t g_environment_queue_storage[
+    MASTER_ENVIRONMENT_QUEUE_DEPTH * sizeof(MasterEnvironmentSample)];
 
 static QueueHandle_t g_event_queue;
 static QueueHandle_t g_lora_tx_queue;
 static QueueHandle_t g_vfd_job_queue;
 static QueueHandle_t g_ui_queue;
+static QueueHandle_t g_environment_queue;
 
 uint8_t MasterQueues_Init(void)
 {
@@ -39,9 +43,15 @@ uint8_t MasterQueues_Init(void)
                                     sizeof(MasterUiSnapshot),
                                     g_ui_queue_storage,
                                     &g_ui_queue_control);
+    g_environment_queue = xQueueCreateStatic(
+        MASTER_ENVIRONMENT_QUEUE_DEPTH,
+        sizeof(MasterEnvironmentSample),
+        g_environment_queue_storage,
+        &g_environment_queue_control);
 
     if ((g_event_queue == NULL) || (g_lora_tx_queue == NULL) ||
-        (g_vfd_job_queue == NULL) || (g_ui_queue == NULL))
+        (g_vfd_job_queue == NULL) || (g_ui_queue == NULL) ||
+        (g_environment_queue == NULL))
     {
         return 0U;
     }
@@ -198,6 +208,33 @@ BaseType_t MasterQueues_PeekUi(MasterUiSnapshot *snapshot)
         return pdFAIL;
     }
     return xQueuePeek(g_ui_queue, snapshot, 0U);
+}
+
+BaseType_t MasterQueues_OverwriteEnvironment(
+    const MasterEnvironmentSample *sample)
+{
+    BaseType_t result;
+
+    if ((sample == NULL) || (g_environment_queue == NULL))
+    {
+        return pdFAIL;
+    }
+
+    result = xQueueOverwrite(g_environment_queue, sample);
+    if (result != pdPASS)
+    {
+        MasterQueueDiag.environment_write_failure_count++;
+    }
+    return result;
+}
+
+BaseType_t MasterQueues_ReceiveEnvironment(MasterEnvironmentSample *sample)
+{
+    if ((sample == NULL) || (g_environment_queue == NULL))
+    {
+        return pdFAIL;
+    }
+    return xQueueReceive(g_environment_queue, sample, 0U);
 }
 
 UBaseType_t MasterQueues_EventWaiting(void)

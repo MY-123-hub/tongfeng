@@ -9,7 +9,7 @@
   - USART1 RX 已启用: 上位机发帧经 route_frame 路由:
       dst_role=ROLE_HOST(02) → down_queue → USART2 转发到 LoRa 给主机
       dst_role=ROLE_CONTROL(01) → 本地处理 (0x30 主机列表配置)
-  - 自动轮询: 每 200ms poll_next_host() 发 READ_TEMP 给下一台主机
+  - 控制室按 M1温度、M1环境 ... M4环境 的顺序自动轮询
   - 无效温度 = 0x8000 (int16 -32768), 温度为有符号 0.1℃ (可为负), 低字节在前
   - CRC-16/MODBUS: poly 0xA001, init 0xFFFF, 从版本字节(buf[2])起算, 跳过 AA55
   - 角色: 01=控制室, 02=主机, 03=从机, 04=上位机(仅上位机→控制室私有配置)
@@ -21,6 +21,7 @@
 
 import os, csv, json, sqlite3
 from datetime import datetime, timedelta
+
 from collections import deque
 
 try:
@@ -59,7 +60,7 @@ NUM_HOSTS = 4
 
 # ============================================================
 #  LoRa 报文协议 (二进制)
-#  帧: AA 55 01 [类型] [发送角色 发送组号] [接收角色 接收组号]
+#  帧: AA 55 02 [类型] [发送角色 发送组号] [接收角色 接收组号]
 #       [流水号低 流水号高] [数据长度] [数据区] [CRC16低 CRC16高]
 #  CRC: CRC-16/MODBUS (多项式 0xA001, 初值 0xFFFF), 低字节在前
 #  上位机经 USB 串口连接控制室板, 以"控制室"身份 (01/00) 收发
@@ -67,7 +68,7 @@ NUM_HOSTS = 4
 class LoRaProtocol:
     FRAME_HEAD1 = 0xAA
     FRAME_HEAD2 = 0x55
-    VERSION = 0x01
+    VERSION = 0x02
 
     # 角色 (与固件 frame.h 对齐)
     ROLE_CONTROL = 0x01     # 控制室
@@ -80,7 +81,9 @@ class LoRaProtocol:
 
     # 报文类型 (与固件 frame.h 对齐)
     MSG_READ_TEMP = 0x01        # 控制室→主机→从机 请求 36 点温度
-    MSG_TEMP_36 = 0x02          # 从机→主机→控制室 返回 36 点温度
+    MSG_TEMP_36 = 0x02          # 返回 36 点温度 + 主从机 BME 温度
+    MSG_READ_ENV = 0x03         # 请求湿度、绝对气压和雨滴预留值
+    MSG_ENV_DATA = 0x04         # 返回 36 点湿度 + 主从机 BME 环境数据
     MSG_SET_FREQ = 0x10         # 控制室→主机 设置变频器频率
     MSG_SET_TARGET_TEMP = 0x11  # 控制室→主机 设置目标温度
     MSG_MANUAL_RUN = 0x12       # 控制室→主机 手动启动风机
@@ -93,7 +96,8 @@ class LoRaProtocol:
     MSG_HOST_LIST = 0x30        # 上位机→控制室 配置主机列表 (私有)
 
     MSG_NAMES = {
-        0x01: 'READ_TEMP', 0x02: 'TEMP_36', 0x10: 'SET_FREQ',
+        0x01: 'READ_TEMP', 0x02: 'TEMP_36', 0x03: 'READ_ENV',
+        0x04: 'ENV_DATA', 0x10: 'SET_FREQ',
         0x11: 'SET_TARGET_TEMP', 0x12: 'MANUAL_RUN', 0x13: 'MANUAL_STOP',
         0x14: 'SET_AUTO', 0x15: 'QUERY_STATUS', 0x20: 'ACK',
         0x21: 'RESULT', 0x7E: 'ERROR', 0x30: 'HOST_LIST',
@@ -101,6 +105,38 @@ class LoRaProtocol:
     ROLE_NAMES = {0x01: '控制室', 0x02: '主机', 0x03: '从机', 0x04: '上位机'}
 
     MAX_DATA_LEN = 96
+    TEMP_DATA_LEN = 76
+    ENV_DATA_LEN = 86
+    INVALID_TEMPERATURE = 0x8000
+    INVALID_HUMIDITY = 0xFFFF
+    INVALID_PRESSURE = 0xFFFFFFFF
+    RAIN_UNAVAILABLE = 0xFFFF
+
+    @classmethod
+    def _valid_payload(cls, msg_type, payload):
+        lengths = {
+            cls.MSG_READ_TEMP: 1,
+            cls.MSG_TEMP_36: cls.TEMP_DATA_LEN,
+            cls.MSG_READ_ENV: 1,
+            cls.MSG_ENV_DATA: cls.ENV_DATA_LEN,
+            cls.MSG_SET_FREQ: 2,
+            cls.MSG_SET_TARGET_TEMP: 2,
+            cls.MSG_MANUAL_RUN: 0,
+            cls.MSG_MANUAL_STOP: 0,
+            cls.MSG_SET_AUTO: 0,
+            cls.MSG_QUERY_STATUS: 0,
+            cls.MSG_ACK: 2,
+            cls.MSG_RESULT: 7,
+        }
+        if msg_type == cls.MSG_ERROR:
+            return 1 <= len(payload) <= 16
+        if msg_type == cls.MSG_HOST_LIST:
+            return 1 <= len(payload) <= NUM_HOSTS
+        if msg_type not in lengths or len(payload) != lengths[msg_type]:
+            return False
+        if msg_type in (cls.MSG_READ_TEMP, cls.MSG_READ_ENV):
+            return payload[0] <= 1
+        return True
 
     @staticmethod
     def crc16_modbus(data: bytes) -> int:
@@ -148,13 +184,16 @@ class LoRaProtocol:
             return None
         data_len = data[10]
         total = 11 + data_len + 2
-        if len(data) < total:
+        if len(data) != total:
             return None
         recv_crc = data[11 + data_len] | (data[12 + data_len] << 8)
         # CRC 从版本字节(buf[2])起算, 不含 AA55 帧头和末尾 CRC
         calc_crc = cls.crc16_modbus(data[2:11 + data_len])
         crc_ok = (recv_crc == calc_crc)
         if strict and not crc_ok:
+            return None
+        payload = bytes(data[11:11 + data_len])
+        if not cls._valid_payload(data[3], payload):
             return None
         return {
             'msg_type': data[3],
@@ -163,7 +202,7 @@ class LoRaProtocol:
             'recv_role': data[6],
             'recv_group': data[7],
             'flow_id': data[8] | (data[9] << 8),
-            'data': bytes(data[11:11 + data_len]),
+            'data': payload,
             'crc_ok': crc_ok,
             'recv_crc': recv_crc,
             'calc_crc': calc_crc,
@@ -173,6 +212,25 @@ class LoRaProtocol:
     def msg_name(cls, t):
         return cls.MSG_NAMES.get(t, f'0x{t:02X}')
 
+    @classmethod
+    def validate_control_room_response(cls, parsed):
+        if not parsed:
+            return False
+        host_types = {cls.MSG_TEMP_36, cls.MSG_ENV_DATA, cls.MSG_ACK,
+                      cls.MSG_RESULT, cls.MSG_ERROR}
+        if (parsed['msg_type'] in host_types and
+                parsed['sender_role'] == cls.ROLE_HOST and
+                1 <= parsed['sender_group'] <= NUM_HOSTS and
+                parsed['recv_role'] == cls.ROLE_CONTROL and
+                parsed['recv_group'] == 0):
+            return True
+        # 控制室生成的本地超时/队列错误仍以原目标主机地址返回给PC。
+        return (parsed['msg_type'] == cls.MSG_ERROR and
+                parsed['sender_role'] == cls.ROLE_CONTROL and
+                parsed['sender_group'] == 0 and
+                parsed['recv_role'] == cls.ROLE_HOST and
+                1 <= parsed['recv_group'] <= NUM_HOSTS)
+
     # ---------- 上位机(控制室 01/00) → 主机 命令构造 ----------
     @classmethod
     def cmd_read_temp(cls, host_group, flow_id, force_resample=False):
@@ -180,6 +238,60 @@ class LoRaProtocol:
         return cls.build_packet(cls.MSG_READ_TEMP, cls.ROLE_CONTROL, 0,
                                 cls.ROLE_HOST, host_group, flow_id,
                                 bytes([1 if force_resample else 0]))
+
+    @classmethod
+    def cmd_read_env(cls, host_group, flow_id, force_resample=False):
+        return cls.build_packet(cls.MSG_READ_ENV, cls.ROLE_CONTROL, 0,
+                                cls.ROLE_HOST, host_group, flow_id,
+                                bytes([1 if force_resample else 0]))
+
+    @staticmethod
+    def _read_u16(data, offset):
+        return data[offset] | (data[offset + 1] << 8)
+
+    @staticmethod
+    def _read_u32(data, offset):
+        return int.from_bytes(data[offset:offset + 4], 'little')
+
+    @classmethod
+    def decode_temperature_data(cls, data):
+        if len(data) != cls.TEMP_DATA_LEN:
+            raise ValueError(f'温度帧数据区应为 {cls.TEMP_DATA_LEN} 字节')
+
+        def decode(raw):
+            if raw == cls.INVALID_TEMPERATURE:
+                return None
+            signed = raw - 0x10000 if raw >= 0x8000 else raw
+            return round(signed / 10.0, 1)
+
+        return {
+            'temperatures': [decode(cls._read_u16(data, i * 2))
+                             for i in range(NUM_NODES)],
+            'slave_bme_temperature': decode(cls._read_u16(data, 72)),
+            'master_bme_temperature': decode(cls._read_u16(data, 74)),
+        }
+
+    @classmethod
+    def decode_environment_data(cls, data):
+        if len(data) != cls.ENV_DATA_LEN:
+            raise ValueError(f'环境帧数据区应为 {cls.ENV_DATA_LEN} 字节')
+
+        def humidity(raw):
+            return None if raw == cls.INVALID_HUMIDITY else round(raw / 10.0, 1)
+
+        def pressure(raw):
+            return None if raw == cls.INVALID_PRESSURE else raw
+
+        rain_raw = cls._read_u16(data, 84)
+        return {
+            'humidities': [humidity(cls._read_u16(data, i * 2))
+                           for i in range(NUM_NODES)],
+            'slave_bme_humidity': humidity(cls._read_u16(data, 72)),
+            'master_bme_humidity': humidity(cls._read_u16(data, 74)),
+            'slave_bme_pressure_pa': pressure(cls._read_u32(data, 76)),
+            'master_bme_pressure_pa': pressure(cls._read_u32(data, 80)),
+            'rain': None if rain_raw == cls.RAIN_UNAVAILABLE else rain_raw,
+        }
 
     @classmethod
     def cmd_set_freq(cls, host_group, flow_id, freq_hz):
@@ -195,10 +307,12 @@ class LoRaProtocol:
     @classmethod
     def cmd_set_target_temp(cls, host_group, flow_id, temp_c):
         # 温度: 2 字节 LE, 单位 0.1 ℃ (26.0 ℃ -> 260)
-        v = max(0, min(0xFFFF, int(round(temp_c * 10))))
+        v = int(round(temp_c * 10))
+        if not -550 <= v <= 1250:
+            raise ValueError('target temperature must be -55.0..125.0 ℃')
         return cls.build_packet(cls.MSG_SET_TARGET_TEMP, cls.ROLE_CONTROL, 0,
                                 cls.ROLE_HOST, host_group, flow_id,
-                                v.to_bytes(2, 'little'))
+                                v.to_bytes(2, 'little', signed=True))
 
     @classmethod
     def cmd_manual_run(cls, host_group, flow_id):
@@ -476,7 +590,8 @@ class SerialManager:
             self.serial_port.write((cmd + '\r\n').encode('utf-8'))
 
     def next_flow_id(self):
-        self._flow_id = (self._flow_id + 1) & 0xFFFF
+        # 0x8000..0xFFFF 保留给控制室自动轮询，人工命令只用低半区。
+        self._flow_id = (self._flow_id + 1) & 0x7FFF
         if self._flow_id == 0:
             self._flow_id = 1
         return self._flow_id
@@ -503,9 +618,13 @@ class SerialManager:
                     idx = i
                     break
             if idx < 0:
-                # 无帧头: 全部当 ASCII 文本回退
-                self._emit_ascii(bytes(self._buffer))
-                self._buffer.clear()
+                # 末尾单独的 AA 可能是下一批二进制帧头，必须保留。
+                if self._buffer[-1] == 0xAA:
+                    self._emit_ascii(bytes(self._buffer[:-1]))
+                    self._buffer[:] = b'\xAA'
+                else:
+                    self._emit_ascii(bytes(self._buffer))
+                    self._buffer.clear()
                 return
             if idx > 0:
                 # AA 55 前的字节当 ASCII
@@ -552,6 +671,20 @@ class App(tk.Tk):
 
         # 4个从机各自独立的历史队列
         self.slave_data = {i: deque(maxlen=500) for i in range(1, NUM_SLAVES + 1)}
+        self.latest_v2 = {
+            i: {
+                'temperatures': [None] * NUM_NODES,
+                'humidities': [None] * NUM_NODES,
+                'slave_bme_temperature': None,
+                'master_bme_temperature': None,
+                'slave_bme_humidity': None,
+                'master_bme_humidity': None,
+                'slave_bme_pressure_pa': None,
+                'master_bme_pressure_pa': None,
+                'rain': None,
+            }
+            for i in range(1, NUM_SLAVES + 1)
+        }
         self.current_slave = 1
         self.log_lines = []
         # 图表视图状态：global 自动跟随完整历史，manual 保持用户缩放/拖移位置。
@@ -570,6 +703,12 @@ class App(tk.Tk):
             for s in range(1, NUM_SLAVES + 1):
                 for r in self.db.load_recent(s, 500):
                     self.slave_data[s].append(r)
+                if self.slave_data[s]:
+                    last = self.slave_data[s][-1]
+                    self.latest_v2[s]['temperatures'] = list(
+                        last.get('temperatures', []))
+                    self.latest_v2[s]['humidities'] = list(
+                        last.get('humidities', []))
         except Exception:
             pass
 
@@ -708,21 +847,20 @@ class App(tk.Tk):
         # --- 顶部：气压卡片 + 雨滴报警卡片 ---
         top_frame = tk.Frame(tab, bg=Theme.BG)
         top_frame.pack(fill=tk.X, padx=10, pady=(8, 3))
-        p_card = tk.Frame(top_frame, bg=Theme.BG_CARD, width=200, height=70)
+        p_card = tk.Frame(top_frame, bg=Theme.BG_CARD, width=520, height=82)
         p_card.pack(side=tk.LEFT, padx=5)
         p_card.pack_propagate(False)
-        ttk.Label(p_card, text='气压压强', style='CardTitle.TLabel').pack(anchor='w', padx=10, pady=(6, 0))
+        ttk.Label(p_card, text='BME280（从机 / 主机）', style='CardTitle.TLabel').pack(anchor='w', padx=10, pady=(6, 0))
         self.pressure_label = tk.Label(p_card, text='--', bg=Theme.BG_CARD,
-                                        fg=Theme.ORANGE, font=('', 18, 'bold'))
+                                        fg=Theme.ORANGE, font=('', 12, 'bold'),
+                                        justify=tk.LEFT)
         self.pressure_label.pack(anchor='w', padx=10)
-        tk.Label(p_card, text='kPa', bg=Theme.BG_CARD,
-                 fg=Theme.TEXT_DIM, font=('', 10)).pack(anchor='w', padx=10)
 
-        r_card = tk.Frame(top_frame, bg=Theme.BG_CARD, width=200, height=70)
+        r_card = tk.Frame(top_frame, bg=Theme.BG_CARD, width=200, height=82)
         r_card.pack(side=tk.LEFT, padx=5)
         r_card.pack_propagate(False)
         ttk.Label(r_card, text='雨滴报警', style='CardTitle.TLabel').pack(anchor='w', padx=10, pady=(6, 0))
-        self.rain_label = tk.Label(r_card, text='未检测', bg=Theme.BG_CARD,
+        self.rain_label = tk.Label(r_card, text='未启用', bg=Theme.BG_CARD,
                                     fg=Theme.GREEN_DK, font=('', 18, 'bold'))
         self.rain_label.pack(anchor='w', padx=10)
         tk.Label(r_card, text='雨滴传感器', bg=Theme.BG_CARD,
@@ -854,7 +992,7 @@ class App(tk.Tk):
         ttk.Button(host_list_row, text='下发主机列表', style='SmallBlue.TButton',
                    command=self._send_host_list).pack(side=tk.LEFT, padx=15)
         ttk.Label(host_list_row,
-                  text='  (控制室每 200ms 自动轮询列表内主机, 温度数据自动到达)',
+                  text='  (控制室按温度帧/环境帧串行轮询列表内主机)',
                   style='Dim.TLabel').pack(side=tk.LEFT, padx=5)
 
         # --- 主机控制: 4 行, 每行一条主机全部命令 ---
@@ -892,7 +1030,7 @@ class App(tk.Tk):
                        command=lambda g=g, h=h: self._send_target_temp(g, self.temp_vars[h].get())
                        ).pack(side=tk.LEFT, padx=2)
 
-            # 风机/自动/查询/请求温度
+            # 风机/自动/查询/遥测读取
             ttk.Button(sub, text='手动启动', style='SmallGreen.TButton',
                        command=lambda g=g: self._send_manual_run(g)).pack(side=tk.LEFT, padx=(10, 2))
             ttk.Button(sub, text='手动停止', style='SmallRed.TButton',
@@ -903,6 +1041,8 @@ class App(tk.Tk):
                        command=lambda g=g: self._send_query_status(g)).pack(side=tk.LEFT, padx=2)
             ttk.Button(sub, text='请求温度', style='SmallFlat.TButton',
                        command=lambda g=g: self._send_read_temp(g, force=False)).pack(side=tk.LEFT, padx=2)
+            ttk.Button(sub, text='请求环境', style='SmallFlat.TButton',
+                       command=lambda g=g: self._send_read_env(g, force=False)).pack(side=tk.LEFT, padx=2)
 
         # 全局: 请求所有主机温度 (允许缓存)
         bulk = tk.Frame(host_frame, bg=Theme.BG_CARD)
@@ -1319,7 +1459,7 @@ class App(tk.Tk):
         for _, lbl in self.humi_labels:
             lbl.config(text='--', fg=Theme.TEXT_DIM)
         self.pressure_label.config(text='--')
-        self.rain_label.config(text='未检测', fg=Theme.TEXT_DIM)
+        self.rain_label.config(text='未启用', fg=Theme.TEXT_DIM)
 
     # -------------------- LoRa 二进制帧处理 --------------------
     # 新控制室固件 (ControlRoomLoRa) 是纯二进制透传:
@@ -1331,6 +1471,9 @@ class App(tk.Tk):
         if not parsed:
             self._log(f'[CRC错误/格式错误] {hex_str}', 'recv')
             return
+        if not LoRaProtocol.validate_control_room_response(parsed):
+            self._log(f'[方向/地址错误] {hex_str}', 'recv')
+            return
         msg_type = parsed['msg_type']
         name = LoRaProtocol.msg_name(msg_type)
         sender = (LoRaProtocol.ROLE_NAMES.get(parsed['sender_role'], '?'),
@@ -1341,6 +1484,8 @@ class App(tk.Tk):
 
         if msg_type == LoRaProtocol.MSG_TEMP_36:
             self._handle_temp_36(parsed)
+        elif msg_type == LoRaProtocol.MSG_ENV_DATA:
+            self._handle_env_data(parsed)
         elif msg_type == LoRaProtocol.MSG_ACK:
             self._handle_ack(parsed)
         elif msg_type == LoRaProtocol.MSG_RESULT:
@@ -1350,39 +1495,53 @@ class App(tk.Tk):
         # 其他类型仅记录日志, 不做业务处理
 
     def _handle_temp_36(self, parsed):
-        """处理 36 点温度 (二进制 LoRa 帧路径, 控制室通常已转 JSON, 此为回退)"""
+        """处理独立温度帧，只更新节点与两套 BME 温度。"""
         data = parsed['data']
-        if len(data) < 72:
-            self._log(f'[温度数据不足] 期望 72 字节, 实际 {len(data)} 字节')
-            return
-        temps = []
-        for i in range(36):
-            raw = data[i * 2] | (data[i * 2 + 1] << 8)   # uint16 LE
-            # 无效标记 = 0x8000 (int16 -32768, 见固件 lora_protocol.h)
-            if raw == 0x8000:
-                temps.append(None)
-            else:
-                # 有符号 0.1℃ (可为负): uint16 -> int16
-                signed = raw - 0x10000 if raw >= 0x8000 else raw
-                temps.append(round(signed / 10.0, 1))
+        decoded = LoRaProtocol.decode_temperature_data(data)
         # 主机转发, sender_group 即对应从机序号 (M1↔S1 同组)
         slave = parsed['sender_group']
         if not (1 <= slave <= NUM_SLAVES):
             self._log(f'[组号异常] sender_group={slave}, 无法关联从机')
             return
+        self.latest_v2[slave].update(decoded)
+        record = self._make_v2_record(slave, parsed['flow_id'], 'temperature')
+        self._commit_v2_record(slave, record)
+
+    def _handle_env_data(self, parsed):
+        """处理独立环境帧，保留最近一次温度帧中的所有温度。"""
+        slave = parsed['sender_group']
+        if not (1 <= slave <= NUM_SLAVES):
+            self._log(f'[组号异常] sender_group={slave}, 无法关联从机')
+            return
+        decoded = LoRaProtocol.decode_environment_data(parsed['data'])
+        self.latest_v2[slave].update(decoded)
+        record = self._make_v2_record(slave, parsed['flow_id'], 'environment')
+        self._commit_v2_record(slave, record)
+
+    def _make_v2_record(self, slave, flow_id, frame_kind):
         captured_at = datetime.now()
-        record = {
+        state = self.latest_v2[slave]
+        master_pressure = state.get('master_bme_pressure_pa')
+        slave_pressure = state.get('slave_bme_pressure_pa')
+        display_pressure = master_pressure if master_pressure is not None else slave_pressure
+        record = dict(state)
+        record.update({
             'timestamp': captured_at.strftime('%H:%M:%S'),
             'full_date': captured_at.strftime('%Y-%m-%d %H:%M:%S'),
             'slave': slave,
-            'temperatures': temps,
-            'humidities': [],          # LoRa 协议无湿度
-            'pressure': None,          # LoRa 协议无气压
-            'rain': None,              # LoRa 协议无雨滴
+            'temperatures': list(state['temperatures']),
+            'humidities': list(state['humidities']),
+            # 兼容现有数据库单气压列；内存中仍保留主、从机两套原始 Pa 值。
+            'pressure': (display_pressure / 1000.0
+                         if display_pressure is not None else None),
             'port': None,
             'num': None,
-            'flow_id': parsed['flow_id'],
-        }
+            'flow_id': flow_id,
+            'frame_kind': frame_kind,
+        })
+        return record
+
+    def _commit_v2_record(self, slave, record):
         self.slave_data[slave].append(record)
         try:
             self.db.insert_sensor_data(record)
@@ -1440,7 +1599,7 @@ class App(tk.Tk):
             for _, lbl in self.humi_labels:
                 lbl.config(text='--', fg=Theme.TEXT_DIM)
             self.pressure_label.config(text='--')
-            self.rain_label.config(text='未检测', fg=Theme.TEXT_DIM)
+            self.rain_label.config(text='未启用', fg=Theme.TEXT_DIM)
             return
 
         data = history[-1]
@@ -1461,20 +1620,30 @@ class App(tk.Tk):
             else:
                 lbl.config(text='--', fg=Theme.TEXT_DIM)
 
-        p = data.get('pressure')
-        if p is not None:
-            self.pressure_label.config(text=f'{p:.1f}')
-        else:
-            self.pressure_label.config(text='--')
+        def fmt(value, suffix, digits=1):
+            return '--' if value is None else f'{value:.{digits}f}{suffix}'
+
+        slave_pressure = data.get('slave_bme_pressure_pa')
+        master_pressure = data.get('master_bme_pressure_pa')
+        if (slave_pressure is None and master_pressure is None and
+                data.get('pressure') is not None):
+            slave_pressure = data['pressure'] * 1000.0
+        self.pressure_label.config(
+            text=(
+                f'从机: {fmt(data.get("slave_bme_temperature"), "℃")}  '
+                f'{fmt(data.get("slave_bme_humidity"), "%RH")}  '
+                f'{fmt(slave_pressure / 1000.0 if slave_pressure is not None else None, "kPa")}\n'
+                f'主机: {fmt(data.get("master_bme_temperature"), "℃")}  '
+                f'{fmt(data.get("master_bme_humidity"), "%RH")}  '
+                f'{fmt(master_pressure / 1000.0 if master_pressure is not None else None, "kPa")}'
+            ))
 
         rain = data.get('rain')
-        if rain is not None:
-            if rain == 1:
-                self.rain_label.config(text='下雨报警!', fg=Theme.RED_DK)
-            else:
-                self.rain_label.config(text='未检测', fg=Theme.GREEN_DK)
+        if rain is None:
+            self.rain_label.config(text='未启用', fg=Theme.TEXT_DIM)
         else:
-            self.rain_label.config(text='未检测', fg=Theme.TEXT_DIM)
+            # 0x0000..0xFFFE 的单位和干湿方向尚未定义，只显示原始值。
+            self.rain_label.config(text=f'原始值 {rain}', fg=Theme.ORANGE)
 
     def _temp_color(self, temp):
         if temp is None:
@@ -1569,6 +1738,14 @@ class App(tk.Tk):
         mode = '强制重采样' if force else '允许缓存'
         self._send_lora_packet(
             packet, f'READ_TEMP 主机{host_group} ({mode}, 流水号 {flow_id})')
+
+    def _send_read_env(self, host_group, force=False):
+        flow_id = self.serial_mgr.next_flow_id()
+        packet = LoRaProtocol.cmd_read_env(host_group, flow_id,
+                                           force_resample=force)
+        mode = '强制重采样' if force else '允许缓存'
+        self._send_lora_packet(
+            packet, f'READ_ENV 主机{host_group} ({mode}, 流水号 {flow_id})')
 
     def _send_read_temp_all(self, force=False):
         """依次向所有主机请求温度 (可选, 控制室自动轮询)"""
@@ -1710,7 +1887,7 @@ class App(tk.Tk):
         for _, lbl in self.humi_labels:
             lbl.config(text='--', fg=Theme.TEXT_DIM)
         self.pressure_label.config(text='--')
-        self.rain_label.config(text='未检测', fg=Theme.TEXT_DIM)
+        self.rain_label.config(text='未启用', fg=Theme.TEXT_DIM)
         self.log_text.config(state='disabled')
         self.rsp_text.config(state='disabled')
         self.cmd_log_text.config(state='disabled')
