@@ -251,6 +251,7 @@ void StartDGUSTask(void const * argument)
   static MasterUiSnapshot ui_snapshot;
   static MasterEvent dgus_event;
   uint32_t last_update_tick = HAL_GetTick() - 1000U;
+  uint32_t last_curve_tick = HAL_GetTick() - 10U;
   uint32_t last_screen_refresh_tick = HAL_GetTick() - 2000U;
   uint32_t boot_tick = HAL_GetTick();
   static uint8_t temperature_sent;
@@ -284,6 +285,26 @@ void StartDGUSTask(void const * argument)
       dgus_event.data.dgus_write.address = dgus_write.address;
       dgus_event.data.dgus_write.value = dgus_write.value;
       (void)MasterQueues_SendEvent(&dgus_event, pdMS_TO_TICKS(20U));
+    }
+
+    /* Curve inputs must be refreshed even when a sample has not changed.
+       0x1000/0x1800 are independent DGUS VPs, so they require two frames. */
+    if ((uint32_t)(HAL_GetTick() - last_curve_tick) >= 10U)
+    {
+      last_curve_tick = HAL_GetTick();
+      if (MasterQueues_PeekUi(&ui_snapshot) == pdPASS)
+      {
+        if (ui_snapshot.temperature_valid != 0U)
+        {
+          (void)DGUS_WriteSingleData(DGUS_VP_TEMPERATURE_CURVE,
+                                     ui_snapshot.average_temperature_x10);
+        }
+        if (ui_snapshot.humidity_valid != 0U)
+        {
+          (void)DGUS_WriteSingleData(DGUS_VP_HUMIDITY_CURVE,
+                                     ui_snapshot.average_humidity_x10);
+        }
+      }
     }
 
     if ((uint32_t)(HAL_GetTick() - last_update_tick) >= 1000U)
@@ -467,7 +488,7 @@ void StartDGUSTask(void const * argument)
         }
       }
     }
-    osDelay(20);
+    osDelay(10);
   }
   /* USER CODE END StartDGUSTask */
 }
