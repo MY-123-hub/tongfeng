@@ -35,13 +35,8 @@ static LoRaProtocolStatus LoRaProtocol_ValidatePayloadLength(uint8_t type,
             return (payload_length == LORA_PROTOCOL_TEMP_PAYLOAD_SIZE) ?
                    LORA_PROTOCOL_OK : LORA_PROTOCOL_INVALID_PAYLOAD_LENGTH;
 
-<<<<<<< HEAD
-        case (uint8_t)LORA_MSG_SENSOR_36:
-            return (payload_length == LORA_PROTOCOL_SENSOR_PAYLOAD_SIZE) ?
-=======
         case (uint8_t)LORA_MSG_ENV_DATA:
             return (payload_length == LORA_PROTOCOL_ENV_PAYLOAD_SIZE) ?
->>>>>>> 28f8ebd64ef82f20c630196b7c8fd675eb3e94d0
                    LORA_PROTOCOL_OK : LORA_PROTOCOL_INVALID_PAYLOAD_LENGTH;
 
         case (uint8_t)LORA_MSG_SET_FREQ:
@@ -93,11 +88,7 @@ static LoRaProtocolStatus LoRaProtocol_ValidateDirection(const LoRaMessage *mess
             break;
 
         case (uint8_t)LORA_MSG_TEMP_36:
-<<<<<<< HEAD
-        case (uint8_t)LORA_MSG_SENSOR_36:
-=======
         case (uint8_t)LORA_MSG_ENV_DATA:
->>>>>>> 28f8ebd64ef82f20c630196b7c8fd675eb3e94d0
             if (((source_role == (uint8_t)LORA_ROLE_SLAVE) &&
                  (destination_role == (uint8_t)LORA_ROLE_MASTER)) ||
                 ((source_role == (uint8_t)LORA_ROLE_MASTER) &&

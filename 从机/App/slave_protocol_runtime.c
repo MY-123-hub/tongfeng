@@ -10,15 +10,6 @@
 #define FRAME_MAX_PAYLOAD            (96U)
 #define FRAME_MIN_SIZE               (13U)
 #define FRAME_MAX_SIZE               (109U)
-<<<<<<< HEAD
-#define FRAME_TEMP_PAYLOAD_SIZE      (72U)
-#define FRAME_SENSOR_PAYLOAD_SIZE    (74U)
-#define FRAME_ROLE_MASTER            (0x02U)
-#define FRAME_ROLE_SLAVE             (0x03U)
-#define FRAME_TYPE_READ_TEMP         (0x01U)
-#define FRAME_TYPE_TEMP_36           (0x02U)
-#define FRAME_TYPE_SENSOR_36         (0x03U)
-=======
 #define FRAME_TEMP_PAYLOAD_SIZE      (76U)
 #define FRAME_ENV_PAYLOAD_SIZE       (86U)
 #define FRAME_ROLE_MASTER            (0x02U)
@@ -27,7 +18,6 @@
 #define FRAME_TYPE_TEMP_DATA         (0x02U)
 #define FRAME_TYPE_READ_ENV          (0x03U)
 #define FRAME_TYPE_ENV_DATA          (0x04U)
->>>>>>> 28f8ebd64ef82f20c630196b7c8fd675eb3e94d0
 #define RX_RING_SIZE                 (256U)
 #define RX_RING_MASK                 (RX_RING_SIZE - 1U)
 #define TX_RETRY_COUNT               (3U)
@@ -524,46 +514,4 @@ void SlaveRuntime_CompleteSample(uint16_t flow_id,
     g_sample_in_progress = 0U;
     g_sample_request_type = 0U;
     SlaveRuntime_BuildResponse(request_type, flow_id);
-}
-
-void SlaveRuntime_CompleteSensorSample(uint16_t flow_id,
-                                       const int16_t temperatures[36],
-                                       uint16_t average_humidity_x10)
-{
-    uint16_t i;
-    uint16_t crc;
-
-    if ((temperatures == NULL) || (g_sample_in_progress == 0U) ||
-        (flow_id != g_sample_flow_id) || (g_tx_pending != 0U))
-    {
-        return;
-    }
-    g_tx_frame[0] = FRAME_HEAD_1;
-    g_tx_frame[1] = FRAME_HEAD_2;
-    g_tx_frame[2] = FRAME_VERSION;
-    g_tx_frame[3] = FRAME_TYPE_SENSOR_36;
-    g_tx_frame[4] = FRAME_ROLE_SLAVE;
-    g_tx_frame[5] = g_local_group;
-    g_tx_frame[6] = FRAME_ROLE_MASTER;
-    g_tx_frame[7] = g_local_group;
-    g_tx_frame[8] = (uint8_t)(flow_id & 0xFFU);
-    g_tx_frame[9] = (uint8_t)(flow_id >> 8U);
-    g_tx_frame[10] = FRAME_SENSOR_PAYLOAD_SIZE;
-    for (i = 0U; i < 36U; i++)
-    {
-        uint16_t raw = (uint16_t)temperatures[i];
-        g_tx_frame[11U + 2U * i] = (uint8_t)(raw & 0xFFU);
-        g_tx_frame[12U + 2U * i] = (uint8_t)(raw >> 8U);
-    }
-    g_tx_frame[83U] = (uint8_t)(average_humidity_x10 & 0xFFU);
-    g_tx_frame[84U] = (uint8_t)(average_humidity_x10 >> 8U);
-    g_tx_frame_length = (uint16_t)(FRAME_MIN_SIZE + FRAME_SENSOR_PAYLOAD_SIZE);
-    crc = SlaveRuntime_Crc16(&g_tx_frame[2], 9U + FRAME_SENSOR_PAYLOAD_SIZE);
-    g_tx_frame[g_tx_frame_length - 2U] = (uint8_t)(crc & 0xFFU);
-    g_tx_frame[g_tx_frame_length - 1U] = (uint8_t)(crc >> 8U);
-    g_last_response_flow_id = flow_id;
-    g_last_response_valid = 1U;
-    g_tx_attempt_count = 0U;
-    g_tx_pending = 1U;
-    g_sample_in_progress = 0U;
 }

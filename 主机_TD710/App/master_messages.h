@@ -21,6 +21,7 @@ typedef enum
     MASTER_EVENT_NONE = 0,
     MASTER_EVENT_LORA_MESSAGE,
     MASTER_EVENT_VFD_RESULT,
+    /* A validated 0x83 write reported by the DGUS receive task. */
     MASTER_EVENT_DGUS_WRITE
 } MasterEventType;
 
@@ -96,30 +97,22 @@ typedef struct
 {
     int16_t temperatures[LORA_PROTOCOL_TEMP_COUNT];
     int16_t target_temperature_x10;
-<<<<<<< HEAD
     uint16_t average_temperature_x10;
     uint16_t average_humidity_x10;
     uint16_t target_humidity_x10;
-    uint16_t uptime_words[5];
-    uint16_t plan_start_words[5];
-    uint16_t plan_end_words[5];
-=======
     int16_t environment_temperature_x10;
->>>>>>> 28f8ebd64ef82f20c630196b7c8fd675eb3e94d0
     uint16_t frequency_x100;
     uint16_t environment_humidity_x10;
     uint32_t environment_pressure_pa;
     uint8_t control_mode;
     uint8_t fan_state;
     uint8_t temperature_valid;
-<<<<<<< HEAD
     uint8_t humidity_valid;
+    uint8_t environment_valid;
     uint8_t target_humidity_configured;
     uint8_t schedule_enabled;
+    /* Incremented only for a control-room setpoint update. */
     uint32_t target_temperature_screen_generation;
-=======
-    uint8_t environment_valid;
->>>>>>> 28f8ebd64ef82f20c630196b7c8fd675eb3e94d0
 } MasterUiSnapshot;
 
 #endif /* MASTER_MESSAGES_H */

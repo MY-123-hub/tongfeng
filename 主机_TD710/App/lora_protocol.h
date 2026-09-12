@@ -10,18 +10,12 @@
 #define LORA_PROTOCOL_MIN_FRAME_SIZE      (13U)
 #define LORA_PROTOCOL_MAX_FRAME_SIZE      (109U)
 #define LORA_PROTOCOL_TEMP_COUNT          (36U)
-<<<<<<< HEAD
-#define LORA_PROTOCOL_TEMP_PAYLOAD_SIZE   (72U)
-#define LORA_PROTOCOL_SENSOR_PAYLOAD_SIZE (74U)
-#define LORA_PROTOCOL_HUMIDITY_INVALID    (0xFFFFU)
-=======
 #define LORA_PROTOCOL_TEMP_PAYLOAD_SIZE   (76U)
 #define LORA_PROTOCOL_ENV_PAYLOAD_SIZE    (86U)
 #define LORA_PROTOCOL_TEMPERATURE_INVALID (-32767 - 1)
 #define LORA_PROTOCOL_HUMIDITY_INVALID    (0xFFFFU)
 #define LORA_PROTOCOL_PRESSURE_INVALID    (0xFFFFFFFFUL)
 #define LORA_PROTOCOL_RAIN_UNAVAILABLE    (0xFFFFU)
->>>>>>> 28f8ebd64ef82f20c630196b7c8fd675eb3e94d0
 
 typedef enum
 {
@@ -34,18 +28,15 @@ typedef enum
 {
     LORA_MSG_READ_TEMP       = 0x01,
     LORA_MSG_TEMP_36         = 0x02,
-<<<<<<< HEAD
-    LORA_MSG_SENSOR_36       = 0x03,
-=======
     LORA_MSG_READ_ENV        = 0x03,
     LORA_MSG_ENV_DATA        = 0x04,
->>>>>>> 28f8ebd64ef82f20c630196b7c8fd675eb3e94d0
     LORA_MSG_SET_FREQ        = 0x10,
     LORA_MSG_SET_TARGET_TEMP = 0x11,
     LORA_MSG_MANUAL_RUN      = 0x12,
     LORA_MSG_MANUAL_STOP     = 0x13,
     LORA_MSG_SET_AUTO        = 0x14,
     LORA_MSG_QUERY_STATUS    = 0x15,
+    /* Control room -> master: year:u16 LE, month, day, hour, minute. */
     LORA_MSG_TIME_SYNC       = 0x16,
     LORA_MSG_ACK             = 0x20,
     LORA_MSG_RESULT          = 0x21,

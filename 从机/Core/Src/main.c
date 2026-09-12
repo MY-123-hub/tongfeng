@@ -157,15 +157,6 @@ static uint8_t Sensor_HasAnyDetected(void)
     return 0U;
 }
 
-<<<<<<< HEAD
-/* 按 ROM 家族码调用对应驱动，读取或 CRC 失败时返回无效。 */
-static uint8_t Sensor_ReadOneTemperature(GPIO_TypeDef *port, uint16_t pin,
-                                         uint8_t channel, uint8_t sensor_index,
-                                         float *temperature, float *humidity,
-                                         uint8_t *humidity_valid)
-{
-    if ((temperature == NULL) || (humidity == NULL) || (humidity_valid == NULL))
-=======
 /* 按ROM家族码读取；GXHT3W一次读取同时保留温度和湿度。 */
 static uint8_t Sensor_ReadOne(GPIO_TypeDef *port, uint16_t pin,
                               uint8_t channel, uint8_t sensor_index,
@@ -174,7 +165,6 @@ static uint8_t Sensor_ReadOne(GPIO_TypeDef *port, uint16_t pin,
 {
     if ((temperature == NULL) || (humidity == NULL) ||
         (humidity_valid == NULL))
->>>>>>> 28f8ebd64ef82f20c630196b7c8fd675eb3e94d0
     {
         return 0U;
     }
@@ -189,11 +179,7 @@ static uint8_t Sensor_ReadOne(GPIO_TypeDef *port, uint16_t pin,
     if (DS18B20_ID[channel][sensor_index][0] == 0x2CU)
     {
         if (GXHT3W_Read_TempHum(port, pin, channel, sensor_index,
-<<<<<<< HEAD
-                                temperature, humidity) != 0U)
-=======
                                temperature, humidity) != 0U)
->>>>>>> 28f8ebd64ef82f20c630196b7c8fd675eb3e94d0
         {
             *humidity_valid = 1U;
             return 1U;
@@ -260,23 +246,13 @@ static void Sensor_Convert_All(void)
     }
 }
 
-<<<<<<< HEAD
-/* 读取 36 点；未接、ROM/数据 CRC 失败和 0.0℃ 均按协议填 00 00。 */
-static uint16_t Sensor_Read_AllSensors(int16_t temperatures[36])
-{
-    uint8_t channel, sen_idx;
-    uint32_t humidity_sum_x10 = 0U;
-    uint16_t humidity_count = 0U;
-    if (temperatures == NULL)
-=======
 static void Sensor_InitSnapshot(SlaveTelemetrySnapshot *snapshot)
 {
     uint8_t index;
 
     if (snapshot == NULL)
->>>>>>> 28f8ebd64ef82f20c630196b7c8fd675eb3e94d0
     {
-        return 0xFFFFU;
+        return;
     }
     memset(snapshot, 0, sizeof(*snapshot));
     for (index = 0U; index < SENSOR_TOTAL_POINT_COUNT; index++)
@@ -342,23 +318,12 @@ static void Sensor_ReadSnapshot(SlaveTelemetrySnapshot *snapshot)
             float temperature = 0.0f;
             float humidity = 0.0f;
             int16_t deci_celsius;
-<<<<<<< HEAD
-            uint8_t humidity_valid;
-            uint8_t read_success;
-            if (is_ghost_id(channel, sen_idx)) continue;
-
-            read_success = Sensor_ReadOneTemperature(port, pin, channel, sen_idx,
-                                                      &temperature, &humidity,
-                                                      &humidity_valid);
-            if ((read_success != 0U) &&
-=======
             uint16_t deci_humidity;
             uint8_t humidity_valid = 0U;
             if (is_ghost_id(channel, sen_idx)) continue;
 
             if ((Sensor_ReadOne(port, pin, channel, sen_idx, &temperature,
                                 &humidity, &humidity_valid) != 0U) &&
->>>>>>> 28f8ebd64ef82f20c630196b7c8fd675eb3e94d0
                 (Sensor_ToDeciCelsius(temperature, &deci_celsius) != 0U))
             {
                 snapshot->node_temperature_x10[point + real_count] = deci_celsius;
@@ -372,12 +337,6 @@ static void Sensor_ReadSnapshot(SlaveTelemetrySnapshot *snapshot)
             {
                 s_sensor_read_failure_count++;
             }
-            if ((read_success != 0U) && (humidity_valid != 0U) &&
-                (humidity >= 0.0f) && (humidity <= 100.0f))
-            {
-                humidity_sum_x10 += (uint32_t)(humidity * 10.0f + 0.5f);
-                humidity_count++;
-            }
 #if DEBUG_LOG
             printf("[D] ch%d[%d] fam=0x%02X T=%.2f H=%.2f\r\n",
                     channel, sen_idx, DS18B20_ID[channel][sen_idx][0],
@@ -386,14 +345,8 @@ static void Sensor_ReadSnapshot(SlaveTelemetrySnapshot *snapshot)
             real_count++;
         }
     }
-<<<<<<< HEAD
-    return (humidity_count == 0U) ? 0xFFFFU :
-           (uint16_t)((humidity_sum_x10 + (uint32_t)(humidity_count / 2U)) /
-                      humidity_count);
-=======
     Sensor_ReadBme(snapshot);
     snapshot->sample_tick = HAL_GetTick();
->>>>>>> 28f8ebd64ef82f20c630196b7c8fd675eb3e94d0
 }
 /* USER CODE END 0 */
 
@@ -506,12 +459,6 @@ int main(void)
 
     if ((s_sample_active != 0U) && ((uint32_t)(now - s_sample_ready_tick) < 0x80000000UL))
     {
-<<<<<<< HEAD
-      int16_t temperatures[SENSOR_TOTAL_POINT_COUNT];
-      uint16_t average_humidity_x10 = Sensor_Read_AllSensors(temperatures);
-      SlaveRuntime_CompleteSensorSample(s_sample_flow_id, temperatures,
-                                        average_humidity_x10);
-=======
       SlaveTelemetrySnapshot snapshot;
       Sensor_ReadSnapshot(&snapshot);
       if (s_sample_has_request != 0U)
@@ -522,7 +469,6 @@ int main(void)
       {
         SlaveRuntime_UpdateSnapshot(&snapshot);
       }
->>>>>>> 28f8ebd64ef82f20c630196b7c8fd675eb3e94d0
       s_sample_active = 0U;
       s_sample_has_request = 0U;
       s_next_sample_tick = HAL_GetTick() + SENSOR_SAMPLE_PERIOD_MS;

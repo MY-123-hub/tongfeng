@@ -9,15 +9,9 @@
 #define GATEWAY_VERSION                 LORA_PROTOCOL_VERSION
 #define GATEWAY_MIN_FRAME_SIZE          (13U)
 #define GATEWAY_MAX_FRAME_SIZE          (109U)
-<<<<<<< HEAD
-#define GATEWAY_MAX_PAYLOAD_SIZE        (96U)
-#define GATEWAY_TEMP_PAYLOAD_SIZE       (72U)
-#define GATEWAY_SENSOR_PAYLOAD_SIZE     (74U)
-=======
 #define GATEWAY_MAX_PAYLOAD_SIZE        LORA_PROTOCOL_MAX_PAYLOAD
 #define GATEWAY_TEMP_PAYLOAD_SIZE       LORA_PROTOCOL_TEMPERATURE_BYTES
 #define GATEWAY_ENV_PAYLOAD_SIZE        LORA_PROTOCOL_ENVIRONMENT_BYTES
->>>>>>> 28f8ebd64ef82f20c630196b7c8fd675eb3e94d0
 
 #define GATEWAY_ROLE_CONTROL_ROOM       (0x01U)
 #define GATEWAY_ROLE_MASTER             (0x02U)
@@ -27,12 +21,8 @@
 
 #define GATEWAY_TYPE_READ_TEMP          (0x01U)
 #define GATEWAY_TYPE_TEMP_36            (0x02U)
-<<<<<<< HEAD
-#define GATEWAY_TYPE_SENSOR_36          (0x03U)
-=======
 #define GATEWAY_TYPE_READ_ENV           (0x03U)
 #define GATEWAY_TYPE_ENV_DATA           (0x04U)
->>>>>>> 28f8ebd64ef82f20c630196b7c8fd675eb3e94d0
 #define GATEWAY_TYPE_SET_FREQ           (0x10U)
 #define GATEWAY_TYPE_SET_TARGET_TEMP    (0x11U)
 #define GATEWAY_TYPE_MANUAL_RUN         (0x12U)
@@ -162,13 +152,8 @@ static uint8_t Gateway_IsValidPayload(const GatewayMessage *message)
             return ((message->payload_length == 1U) && (message->payload[0] <= 1U)) ? 1U : 0U;
         case GATEWAY_TYPE_TEMP_36:
             return (message->payload_length == GATEWAY_TEMP_PAYLOAD_SIZE) ? 1U : 0U;
-<<<<<<< HEAD
-        case GATEWAY_TYPE_SENSOR_36:
-            return (message->payload_length == GATEWAY_SENSOR_PAYLOAD_SIZE) ? 1U : 0U;
-=======
         case GATEWAY_TYPE_ENV_DATA:
             return (message->payload_length == GATEWAY_ENV_PAYLOAD_SIZE) ? 1U : 0U;
->>>>>>> 28f8ebd64ef82f20c630196b7c8fd675eb3e94d0
         case GATEWAY_TYPE_SET_FREQ:
         case GATEWAY_TYPE_SET_TARGET_TEMP:
         case GATEWAY_TYPE_ACK:
@@ -507,8 +492,7 @@ static uint8_t Gateway_PendingComplete(const GatewayMessage *message)
     }
     if (g_pending.request_type == GATEWAY_TYPE_READ_TEMP)
     {
-        return ((message->type == GATEWAY_TYPE_TEMP_36) ||
-                (message->type == GATEWAY_TYPE_SENSOR_36)) ? 1U : 0U;
+        return (message->type == GATEWAY_TYPE_TEMP_36) ? 1U : 0U;
     }
     if (g_pending.request_type == GATEWAY_TYPE_READ_ENV)
     {

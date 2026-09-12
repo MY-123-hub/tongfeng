@@ -265,8 +265,9 @@ void StartDGUSTask(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-    /* DGUS 串口只由本任务处理，避免与 LoRa 任务交叉访问。 */
     DGUSReceivedWrite dgus_write;
+
+    /* USART1 is owned by this task: receive 0x83 writes before transmitting. */
     DGUS_ProcessRx();
     while (DGUS_TakeReceivedWrite(&dgus_write) != 0U)
     {
@@ -276,14 +277,15 @@ void StartDGUSTask(void const * argument)
       dgus_event.data.dgus_write.value = dgus_write.value;
       (void)MasterQueues_SendEvent(&dgus_event, pdMS_TO_TICKS(20U));
     }
+
     if ((uint32_t)(HAL_GetTick() - last_update_tick) >= 1000U)
     {
-      last_update_tick = HAL_GetTick();
+      uint32_t now_tick = HAL_GetTick();
+      last_update_tick = now_tick;
       if (MasterQueues_PeekUi(&ui_snapshot) == pdPASS)
       {
-<<<<<<< HEAD
         uint8_t uptime_ascii[16];
-        uint32_t elapsed_minutes = (uint32_t)(HAL_GetTick() - boot_tick) / 60000U;
+        uint32_t elapsed_minutes = (uint32_t)(now_tick - boot_tick) / 60000U;
         uint32_t minutes = elapsed_minutes;
         uint32_t years;
         uint8_t months;
@@ -291,16 +293,11 @@ void StartDGUSTask(void const * argument)
         uint8_t hours;
         uint8_t minute_of_hour;
 
-        /*
-         * DGUS does not acknowledge ordinary VP writes.  The display may
-         * still be booting when the master sends its first state, so repeat
-         * the operational display values every two seconds.  This is also a
-         * visible, probeable heartbeat on PA9.  Operator-editable setpoints
-         * and plan VPs are deliberately excluded below.
-         */
-        if ((uint32_t)(HAL_GetTick() - last_screen_refresh_tick) >= 2000U)
+        /* Re-send only real-time status.  Editable screen fields must not be
+           periodically overwritten while an operator is entering a value. */
+        if ((uint32_t)(now_tick - last_screen_refresh_tick) >= 2000U)
         {
-          last_screen_refresh_tick = HAL_GetTick();
+          last_screen_refresh_tick = now_tick;
           temperature_sent = 0U;
           humidity_sent = 0U;
           fan_state_sent = 0U;
@@ -328,6 +325,7 @@ void StartDGUSTask(void const * argument)
         uptime_ascii[13] = (uint8_t)':';
         uptime_ascii[14] = (uint8_t)('0' + (minute_of_hour / 10U));
         uptime_ascii[15] = (uint8_t)('0' + (minute_of_hour % 10U));
+
         if ((ui_snapshot.temperature_valid != 0U) &&
             ((temperature_sent == 0U) ||
              (last_temperature_x10 != ui_snapshot.average_temperature_x10)))
@@ -350,11 +348,9 @@ void StartDGUSTask(void const * argument)
             humidity_sent = 1U;
           }
         }
-        /*
-         * The screen owns operator-entered setpoints.  Only an accepted
-         * control-room SET_TARGET_TEMP command is allowed to write 0x5013
-         * back to the screen; normal refreshes never touch either setpoint.
-         */
+
+        /* Only a successfully accepted upper-computer command owns this
+           one-shot write.  Screen-originated edits are never echoed back. */
         if (applied_remote_temperature_generation !=
             ui_snapshot.target_temperature_screen_generation)
         {
@@ -367,10 +363,10 @@ void StartDGUSTask(void const * argument)
         }
         if ((initial_setpoint_read_requested == 0U) &&
             (ui_snapshot.target_temperature_screen_generation == 0U) &&
-            ((uint32_t)(HAL_GetTick() - boot_tick) >= 2000U))
+            ((uint32_t)(now_tick - boot_tick) >= 2000U))
         {
-          /* Read the screen's initial 0x5013/0x5014 values once it is ready.
-             The two VPs are consecutive, so one 0x83 request reads both. */
+          /* 0x5013 and 0x5014 are consecutive.  The reply is passed to the
+             runtime through the same 0x83 path as an operator edit. */
           if (DGUS_ReadWords(DGUS_VP_TARGET_TEMPERATURE, 2U) != 0U)
           {
             initial_setpoint_read_requested = 1U;
@@ -384,12 +380,8 @@ void StartDGUSTask(void const * argument)
             last_uptime_minute = elapsed_minutes;
           }
         }
-        /*
-         * 0x6070--0x6074 and 0x6090--0x6094 belong to the screen's
-         * editable ASCII time controls.  Do not write those VPs from the
-         * master: a binary Word write corrupts their text buffer and also
-         * overwrites an operator's in-progress edit.
-         */
+        /* The time VPs are ASCII text controls on this project.  Never write
+           0x6070--0x6074 or 0x6090--0x6094 from the master. */
         if ((fan_state_sent == 0U) || (last_fan_state !=
             ((ui_snapshot.fan_state == MASTER_FAN_STATE_RUNNING) ? 1U : 0U)))
         {
@@ -401,17 +393,6 @@ void StartDGUSTask(void const * argument)
             last_fan_state = fan_state;
             fan_state_sent = 1U;
           }
-=======
-        /* 旧串口屏只有一个粮温字段，暂时显示36点中的第1点。 */
-        DGUS_WriteSingleData(DGUS_GrainTemp,
-                             (int)ui_snapshot.temperatures[0]);
-        if (ui_snapshot.environment_valid != 0U)
-        {
-          DGUS_WriteSingleData(DGUS_EnvirTemp,
-                               (int)ui_snapshot.environment_temperature_x10);
-          DGUS_WriteSingleData(DGUS_EnvirHumi,
-                               (int)ui_snapshot.environment_humidity_x10);
->>>>>>> 28f8ebd64ef82f20c630196b7c8fd675eb3e94d0
         }
       }
     }

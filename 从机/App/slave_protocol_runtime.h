@@ -37,15 +37,8 @@ uint8_t SlaveRuntime_IsApplicationMode(void);
 void SlaveRuntime_PushRxByteFromIsr(uint8_t byte);
 void SlaveRuntime_Process(uint32_t now_ms);
 uint8_t SlaveRuntime_TakeSampleRequest(uint16_t *flow_id);
-<<<<<<< HEAD
-void SlaveRuntime_CompleteSample(uint16_t flow_id, const int16_t temperatures[36]);
-void SlaveRuntime_CompleteSensorSample(uint16_t flow_id,
-                                       const int16_t temperatures[36],
-                                       uint16_t average_humidity_x10);
-=======
 void SlaveRuntime_UpdateSnapshot(const SlaveTelemetrySnapshot *snapshot);
 void SlaveRuntime_CompleteSample(uint16_t flow_id,
                                  const SlaveTelemetrySnapshot *snapshot);
->>>>>>> 28f8ebd64ef82f20c630196b7c8fd675eb3e94d0
 
 #endif /* SLAVE_PROTOCOL_RUNTIME_H */
